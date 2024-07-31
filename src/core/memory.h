@@ -212,7 +212,7 @@ private:
 
     VMAHandle CarveVMA(VAddr virtual_addr, size_t size);
 
-    DirectMemoryArea& CarveDmemArea(PAddr addr, size_t size);
+    DMemHandle CarveDmemArea(PAddr addr, size_t size);
 
     VMAHandle Split(VMAHandle vma_handle, size_t offset_in_vma);
 

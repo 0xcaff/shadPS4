@@ -20,6 +20,8 @@
 asm(".zerofill GUEST_SYSTEM,GUEST_SYSTEM,__guest_system,0xFBFC00000");
 #endif
 
+using namespace boost::icl;
+
 namespace Core {
 
 static constexpr size_t BackingSize = SCE_KERNEL_MAIN_DMEM_SIZE;
@@ -37,6 +39,16 @@ static constexpr size_t BackingSize = SCE_KERNEL_MAIN_DMEM_SIZE;
         return PAGE_READWRITE;
     }
 }
+
+struct BackedMemMapping {
+    PAddr phys_base;
+    uintptr_t fd;
+    ULONG prot;
+
+    constexpr bool operator==(BackedMemMapping const& other) {
+        return phys_base == other.phys_base && fd == other.fd && prot == other.prot;
+    }
+};
 
 struct AddressSpace::Impl {
     Impl() : process{GetCurrentProcess()} {
@@ -163,6 +175,10 @@ struct AddressSpace::Impl {
             HANDLE backing = fd ? reinterpret_cast<HANDLE>(fd) : backing_handle;
             ptr = MapViewOfFile3(backing, process, reinterpret_cast<PVOID>(virtual_addr), phys_addr,
                                  size, MEM_REPLACE_PLACEHOLDER, prot, nullptr, 0);
+
+            // Add the mapped view to the file view map.
+            mapped_file_views.insert(std::pair<interval<uintptr_t>::type, BackedMemMapping>(
+                interval<uintptr_t>::closed(virtual_addr, virtual_end), {phys_addr, fd, prot}));
         } else {
             ptr =
                 VirtualAlloc2(process, reinterpret_cast<PVOID>(virtual_addr), size,
@@ -173,26 +189,49 @@ struct AddressSpace::Impl {
     }
 
     void Unmap(VAddr virtual_addr, size_t size, bool has_backing) {
+        VAddr unmap_addr = virtual_addr;
+        VAddr unmap_end_addr = virtual_addr + size;
+        PAddr phys_base;
+        uintptr_t fd;
+        ULONG prot;
         bool ret;
+
+        // There does not appear to be comparable support for partial unmapping on Windows.
+        // Unfortunately, a least one title was found to require this. The workaround is to unmap
+        // the entire allocation and remap the portions outside of the requested unmapping range.
         if (has_backing) {
-            ret = UnmapViewOfFile2(process, reinterpret_cast<PVOID>(virtual_addr),
+            auto mapping = mapped_file_views.upper_bound(
+                interval<uintptr_t>::closed(virtual_addr, virtual_addr));
+            ASSERT_MSG(mapping != mapped_file_views.end(),
+                       "virtual_addr={:#X} not found in mapped views", virtual_addr);
+            unmap_addr = mapping->first.lower();
+            unmap_end_addr = mapping->first.upper();
+            phys_base = mapping->second.phys_base;
+            fd = mapping->second.fd;
+            prot = mapping->second.prot;
+
+            ret = UnmapViewOfFile2(process, reinterpret_cast<PVOID>(unmap_addr),
                                    MEM_PRESERVE_PLACEHOLDER);
+
+            // Remove the entry from the map of active views.
+            mapped_file_views.erase(mapping);
         } else {
-            ret = VirtualFreeEx(process, reinterpret_cast<PVOID>(virtual_addr), size,
+            // TODO: Verify if partial unmapping support is required for flexible allocations.
+            ret = VirtualFreeEx(process, reinterpret_cast<PVOID>(unmap_addr), size,
                                 MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER);
         }
-        ASSERT_MSG(ret, "Unmap operation on virtual_addr={:#X} failed: {}", virtual_addr,
+        ASSERT_MSG(ret, "Unmap operation on virtual_addr={:#X} failed: {}", unmap_addr,
                    Common::GetLastErrorMsg());
 
         // The unmap call will create a new placeholder region. We need to see if we can coalesce it
         // with neighbors.
-        VAddr placeholder_start = virtual_addr;
-        VAddr placeholder_end = virtual_addr + size;
+        VAddr placeholder_start = unmap_addr;
+        VAddr placeholder_end = unmap_end_addr;
 
         // Check if a placeholder exists right before us.
-        const auto left_it = placeholders.find(virtual_addr - 1);
+        const auto left_it = placeholders.find(unmap_addr - 1);
         if (left_it != placeholders.end()) {
-            ASSERT_MSG(left_it->upper() == virtual_addr,
+            ASSERT_MSG(left_it->upper() == unmap_addr,
                        "Left placeholder does not end at virtual_addr!");
             placeholder_start = left_it->lower();
             VirtualFreeEx(process, reinterpret_cast<LPVOID>(placeholder_start),
@@ -213,6 +252,20 @@ struct AddressSpace::Impl {
 
         // Insert the new placeholder.
         placeholders.insert({placeholder_start, placeholder_end});
+
+        auto unmap_start_offset = virtual_addr - unmap_addr;
+        auto orig_unmap_end_addr = virtual_addr + size;
+
+        // Remap the beginning range of the unmapped allocation block if necessary
+        if (unmap_start_offset != 0) {
+            Map(unmap_addr, phys_base, unmap_start_offset, prot, fd);
+        }
+
+        // Remap the ending range of the unmapped allocation block if necessary
+        if (orig_unmap_end_addr != unmap_end_addr) {
+            Map(orig_unmap_end_addr, phys_base + unmap_start_offset + size,
+                unmap_end_addr - orig_unmap_end_addr, prot, fd);
+        }
     }
 
     void Protect(VAddr virtual_addr, size_t size, bool read, bool write, bool execute) {
@@ -250,7 +303,8 @@ struct AddressSpace::Impl {
     size_t system_reserved_size{};
     u8* user_base{};
     size_t user_size{};
-    boost::icl::separate_interval_set<uintptr_t> placeholders;
+    separate_interval_set<uintptr_t> placeholders;
+    split_interval_map<uintptr_t, BackedMemMapping, partial_enricher> mapped_file_views;
 };
 #else
 
@@ -421,7 +475,7 @@ struct AddressSpace::Impl {
     size_t system_reserved_size{};
     u8* user_base{};
     size_t user_size{};
-    boost::icl::interval_set<VAddr> m_free_regions;
+    interval_set<VAddr> m_free_regions;
 };
 #endif
 
