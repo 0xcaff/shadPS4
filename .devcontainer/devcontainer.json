@@ -1,0 +1,14 @@
+{
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "runArgs": [
+    "--device=/dev/dri",  // Access to GPU devices
+    "-v", "/tmp/.X11-unix:/tmp/.X11-unix",  // Bind mount for X11 display
+    "-e", "DISPLAY=${localEnv:DISPLAY}"  // Pass DISPLAY environment variable
+  ],
+  "mounts": [
+    "source=${localWorkspaceFolder},target=/workspace,type=bind"
+  ],
+  "remoteUser": "ubuntu"
+}
