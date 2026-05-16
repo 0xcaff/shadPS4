@@ -67,37 +67,100 @@ static bool IgnoresExecMask(const GcnInst& inst) {
     return false;
 }
 
-static std::optional<u32> ResolveSetPcTarget(std::span<const GcnInst> list, u32 setpc_index,
-                                             std::span<const u32> pc_map) {
-    if (setpc_index < 3) {
+static bool IsScalarReg(const InstOperand& operand, u32 code) {
+    return operand.field == OperandField::ScalarGPR && operand.code == code;
+}
+
+static bool IsZero(const InstOperand& operand) {
+    return operand.field == OperandField::ConstZero ||
+           (operand.field == OperandField::LiteralConst && operand.code == 0);
+}
+
+static std::optional<u32> GetLiteralOperand(const GcnInst& inst, u32 pc_low_reg,
+                                            bool& pc_is_src0) {
+    if (inst.src_count < 2) {
         return std::nullopt;
     }
 
-    const auto& getpc = list[setpc_index - 3];
-    const auto& arith = list[setpc_index - 2];
-    const auto& setpc = list[setpc_index];
+    if (inst.src[0].field == OperandField::LiteralConst && IsScalarReg(inst.src[1], pc_low_reg)) {
+        pc_is_src0 = false;
+        return inst.src[0].code;
+    }
+    if (IsScalarReg(inst.src[0], pc_low_reg) && inst.src[1].field == OperandField::LiteralConst) {
+        pc_is_src0 = true;
+        return inst.src[1].code;
+    }
+    return std::nullopt;
+}
 
-    if (getpc.opcode != Opcode::S_GETPC_B64 ||
-        !(arith.opcode == Opcode::S_ADD_U32 || arith.opcode == Opcode::S_SUB_U32) ||
-        setpc.opcode != Opcode::S_SETPC_B64)
+static bool IsPcHighCarry(const GcnInst& inst, u32 pc_high_reg, Opcode low_opcode) {
+    if (inst.dst_count < 1 || !IsScalarReg(inst.dst[0], pc_high_reg) || inst.src_count < 2) {
+        return false;
+    }
+
+    if (low_opcode == Opcode::S_ADD_U32) {
+        return inst.opcode == Opcode::S_ADDC_U32 &&
+               ((IsScalarReg(inst.src[0], pc_high_reg) && IsZero(inst.src[1])) ||
+                (IsZero(inst.src[0]) && IsScalarReg(inst.src[1], pc_high_reg)));
+    }
+
+    return low_opcode == Opcode::S_SUB_U32 && inst.opcode == Opcode::S_SUBB_U32 &&
+           IsScalarReg(inst.src[0], pc_high_reg) && IsZero(inst.src[1]);
+}
+
+static std::optional<u32> ResolveSetPcTarget(std::span<const GcnInst> list, u32 setpc_index,
+                                             std::span<const u32> pc_map) {
+    if (setpc_index < 2 || list[setpc_index].opcode != Opcode::S_SETPC_B64 ||
+        list[setpc_index].src_count < 1 ||
+        list[setpc_index].src[0].field != OperandField::ScalarGPR) {
         return std::nullopt;
+    }
 
-    if (getpc.dst[0].code != setpc.src[0].code || arith.dst[0].code != setpc.src[0].code)
-        return std::nullopt;
+    const u32 pc_low_reg = list[setpc_index].src[0].code;
+    const u32 first_candidate = setpc_index >= 3 ? setpc_index - 3 : 1;
+    for (u32 arith_index = setpc_index - 1; arith_index >= first_candidate; --arith_index) {
+        const u32 getpc_index = arith_index - 1;
+        const auto& getpc = list[getpc_index];
+        const auto& arith = list[arith_index];
 
-    if (arith.src_count < 2 || arith.src[1].field != OperandField::LiteralConst)
-        return std::nullopt;
+        if (getpc.opcode != Opcode::S_GETPC_B64 || getpc.dst_count < 1 ||
+            !IsScalarReg(getpc.dst[0], pc_low_reg) || arith.dst_count < 1 ||
+            !IsScalarReg(arith.dst[0], pc_low_reg) ||
+            !(arith.opcode == Opcode::S_ADD_U32 || arith.opcode == Opcode::S_SUB_U32)) {
+            continue;
+        }
 
-    const u32 imm = arith.src[1].code;
+        const u32 pc_high_reg = pc_low_reg + 1;
+        bool valid_tail = true;
+        for (u32 i = arith_index + 1; i < setpc_index; ++i) {
+            if (!IsPcHighCarry(list[i], pc_high_reg, arith.opcode)) {
+                valid_tail = false;
+                break;
+            }
+        }
+        if (!valid_tail) {
+            continue;
+        }
 
-    const s32 signed_offset =
-        (arith.opcode == Opcode::S_ADD_U32) ? static_cast<s32>(imm) : -static_cast<s32>(imm);
+        bool pc_is_src0{};
+        const auto imm = GetLiteralOperand(arith, pc_low_reg, pc_is_src0);
+        if (!imm) {
+            continue;
+        }
 
-    const u32 base_pc = pc_map[setpc_index - 3] + getpc.length;
+        const u32 base_pc = pc_map[getpc_index] + getpc.length;
+        u32 result_pc = 0;
+        if (arith.opcode == Opcode::S_ADD_U32) {
+            result_pc = base_pc + *imm;
+        } else {
+            result_pc = pc_is_src0 ? base_pc - *imm : *imm - base_pc;
+        }
 
-    const u32 result_pc = static_cast<u32>(static_cast<s32>(base_pc) + signed_offset);
-    LOG_DEBUG(Render_Recompiler, "SetPC target: {} + {} = {}", base_pc, signed_offset, result_pc);
-    return result_pc & ~0x3u;
+        LOG_DEBUG(Render_Recompiler, "SetPC target: {:#x} -> {:#x}", base_pc, result_pc);
+        return result_pc & ~0x3u;
+    }
+
+    return std::nullopt;
 }
 
 static constexpr size_t LabelReserveSize = 32;
