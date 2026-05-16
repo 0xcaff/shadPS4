@@ -439,6 +439,8 @@ set(SYSTEM_LIBS src/core/libraries/system/commondialog.cpp
                 src/core/libraries/app_content/app_content.cpp
                 src/core/libraries/app_content/app_content.h
                 src/core/libraries/app_content/app_content_error.h
+                src/core/libraries/content_search/content_search.cpp
+                src/core/libraries/content_search/content_search.h
                 src/core/libraries/rtc/rtc.cpp
                 src/core/libraries/rtc/rtc.h
                 src/core/libraries/rtc/rtc_error.h

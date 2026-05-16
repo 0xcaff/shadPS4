@@ -25,6 +25,23 @@ s32 PS4_SYSV_ABI internal_snprintf(char* s, u64 n, VA_ARGS) {
     return snprintf_ctx(s, n, &ctx);
 }
 
+s32 PS4_SYSV_ABI internal_snprintf_s(char* s, u64 n, VA_ARGS) {
+    if (s == nullptr || n == 0) {
+        return -1;
+    }
+
+    VA_CTX(ctx);
+    return snprintf_ctx(s, n, &ctx);
+}
+
+s32 PS4_SYSV_ABI internal_vsnprintf_s(char* s, u64 n, const char* format, Common::VaList* arg) {
+    if (s == nullptr || n == 0 || format == nullptr || arg == nullptr) {
+        return -1;
+    }
+
+    return vsnprintf_ctx(s, n, format, arg);
+}
+
 std::map<s32, OrbisFILE*> g_files{};
 // Constants for tracking accurate file indexes.
 // Since the file struct is exposed to the application, accuracy is important.
@@ -465,6 +482,9 @@ s32 PS4_SYSV_ABI internal_fclose(OrbisFILE* file) {
 
 void RegisterlibSceLibcInternalIo(Core::Loader::SymbolsResolver* sym) {
     LIB_FUNCTION("eLdDw6l0-bU", "libSceLibcInternal", 1, "libSceLibcInternal", internal_snprintf);
+    LIB_FUNCTION("3BytPOQgVKc", "libSceLibcInternal", 1, "libSceLibcInternal", internal_snprintf_s);
+    LIB_FUNCTION("rWSuTWY2JN0", "libSceLibcInternal", 1, "libSceLibcInternal",
+                 internal_vsnprintf_s);
     LIB_FUNCTION("MUjC4lbHrK4", "libSceLibcInternal", 1, "libSceLibcInternal", internal_fflush);
     LIB_FUNCTION("xGT4Mc55ViQ", "libSceLibcInternal", 1, "libSceLibcInternal", internal__Fofind);
     LIB_FUNCTION("dREVnZkAKRE", "libSceLibcInternal", 1, "libSceLibcInternal", internal__Foprep);

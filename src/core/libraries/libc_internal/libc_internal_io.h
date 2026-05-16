@@ -11,6 +11,10 @@ namespace Core::Loader {
 class SymbolsResolver;
 }
 
+namespace Common {
+struct VaList;
+}
+
 namespace Libraries::LibcInternal {
 
 static std::recursive_mutex g_file_mtx{};
@@ -78,6 +82,8 @@ struct OrbisFILE {
 };
 
 s32 PS4_SYSV_ABI internal_snprintf(char* s, u64 n, VA_ARGS);
+s32 PS4_SYSV_ABI internal_snprintf_s(char* s, u64 n, VA_ARGS);
+s32 PS4_SYSV_ABI internal_vsnprintf_s(char* s, u64 n, const char* format, Common::VaList* arg);
 void PS4_SYSV_ABI internal__Lockfilelock(OrbisFILE* file);
 void PS4_SYSV_ABI internal__Unlockfilelock(OrbisFILE* file);
 OrbisFILE* PS4_SYSV_ABI internal__Fofind();

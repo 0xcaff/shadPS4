@@ -11,6 +11,7 @@
 #include "core/libraries/camera/camera.h"
 #include "core/libraries/companion/companion_httpd.h"
 #include "core/libraries/companion/companion_util.h"
+#include "core/libraries/content_search/content_search.h"
 #include "core/libraries/disc_map/disc_map.h"
 #include "core/libraries/game_live_streaming/gamelivestreaming.h"
 #include "core/libraries/gnmdriver/gnmdriver.h"
@@ -113,6 +114,7 @@ void InitHLELibs(Core::Loader::SymbolsResolver* sym) {
     Libraries::Np::NpTus::RegisterLib(sym);
     Libraries::ScreenShot::RegisterLib(sym);
     Libraries::AppContent::RegisterLib(sym);
+    Libraries::ContentSearch::RegisterLib(sym);
     Libraries::PngDec::RegisterLib(sym);
     Libraries::PlayGo::RegisterLib(sym);
     Libraries::PlayGo::Dialog::RegisterLib(sym);

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <array>
 #include <thread>
 #include <boost/asio/io_context.hpp>
 
@@ -42,6 +43,9 @@
 namespace Libraries::Kernel {
 
 static u64 g_stack_chk_guard = 0xDEADBEEF54321ABC; // dummy return
+static constexpr std::array<u8, 16> OpenPsId = {
+    0x73, 0x68, 0x61, 0x64, 0x50, 0x53, 0x34, 0x00, 0x44, 0x72, 0x65, 0x61, 0x6d, 0x73, 0x00, 0x01,
+};
 
 boost::asio::io_context io_context;
 static std::mutex m_asio_req;
@@ -185,6 +189,15 @@ s32 PS4_SYSV_ABI sceKernelUuidCreate(OrbisKernelUuid* orbisUuid) {
     uuid_generate(uuid);
 #endif
     std::memcpy(orbisUuid, &uuid, sizeof(OrbisKernelUuid));
+    return ORBIS_OK;
+}
+
+s32 PS4_SYSV_ABI sceKernelGetOpenPsId(void* open_psid) {
+    if (open_psid == nullptr) {
+        return ORBIS_KERNEL_ERROR_EINVAL;
+    }
+
+    std::memcpy(open_psid, OpenPsId.data(), OpenPsId.size());
     return ORBIS_OK;
 }
 
@@ -441,6 +454,8 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
     LIB_FUNCTION("PfccT7qURYE", "libkernel", 1, "libkernel", kernel_ioctl);
     LIB_FUNCTION("wW+k21cmbwQ", "libkernel", 1, "libkernel", kernel_ioctl);
     LIB_FUNCTION("JGfTMBOdUJo", "libkernel", 1, "libkernel", sceKernelGetFsSandboxRandomWord);
+    LIB_FUNCTION("DLORcroUqbc", "libSceOpenPsId", 1, "libkernel", sceKernelGetOpenPsId);
+    LIB_FUNCTION("ul57hvm6mBc", "libSceOpenPsId", 1, "libkernel", sceKernelGetOpenPsId);
     LIB_FUNCTION("6xVpy0Fdq+I", "libkernel", 1, "libkernel", _sigprocmask);
     LIB_FUNCTION("Xjoosiw+XPI", "libkernel", 1, "libkernel", sceKernelUuidCreate);
     LIB_FUNCTION("Ou3iL1abvng", "libkernel", 1, "libkernel", stack_chk_fail);
