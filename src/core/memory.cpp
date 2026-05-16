@@ -371,30 +371,35 @@ s32 MemoryManager::PoolCommit(VAddr virtual_addr, u64 size, MemoryProt prot, s32
 
     // Input addresses to PoolCommit are treated as fixed, and have a constant alignment.
     const u64 alignment = 64_KB;
-    VAddr mapped_addr = Common::AlignUp(virtual_addr, alignment);
+    const VAddr commit_start = Common::AlignDown(virtual_addr, alignment);
+    const VAddr commit_end = Common::AlignUp(virtual_addr + size, alignment);
+    const u64 commit_size = commit_end - commit_start;
 
-    auto& vma = FindVMA(mapped_addr)->second;
+    ASSERT_MSG(IsValidMapping(commit_start, commit_size),
+               "Attempted to access invalid address {:#x}", commit_start);
+
+    auto& vma = FindVMA(commit_start)->second;
     if (vma.type != VMAType::PoolReserved) {
         // If we're attempting to commit non-pooled memory, return EINVAL
-        LOG_ERROR(Kernel_Vmm, "Attempting to commit non-pooled memory at {:#x}", mapped_addr);
+        LOG_ERROR(Kernel_Vmm, "Attempting to commit non-pooled memory at {:#x}", commit_start);
         return ORBIS_KERNEL_ERROR_EINVAL;
     }
 
-    if (!vma.Contains(mapped_addr, size)) {
+    if (!vma.Contains(commit_start, commit_size)) {
         // If there's not enough space to commit, return EINVAL
         LOG_ERROR(Kernel_Vmm,
                   "Pooled region {:#x} to {:#x} is not large enough to commit from {:#x} to {:#x}",
-                  vma.base, vma.base + vma.size, mapped_addr, mapped_addr + size);
+                  vma.base, vma.base + vma.size, commit_start, commit_end);
         return ORBIS_KERNEL_ERROR_EINVAL;
     }
 
-    if (pool_budget <= size) {
+    if (pool_budget < commit_size) {
         // If there isn't enough pooled memory to perform the mapping, return ENOMEM
         LOG_ERROR(Kernel_Vmm, "Not enough pooled memory to perform mapping");
         return ORBIS_KERNEL_ERROR_ENOMEM;
     } else {
         // Track how much pooled memory this commit will take
-        pool_budget -= size;
+        pool_budget -= commit_size;
     }
 
     if (True(prot & MemoryProt::CpuWrite)) {
@@ -403,7 +408,7 @@ s32 MemoryManager::PoolCommit(VAddr virtual_addr, u64 size, MemoryProt prot, s32
     }
 
     // Create the virtual mapping for the commit
-    const auto new_vma_handle = CarveVMA(virtual_addr, size);
+    const auto new_vma_handle = CarveVMA(commit_start, commit_size);
     auto& new_vma = new_vma_handle->second;
     new_vma.disallow_merge = false;
     new_vma.prot = prot;
@@ -413,8 +418,8 @@ s32 MemoryManager::PoolCommit(VAddr virtual_addr, u64 size, MemoryProt prot, s32
 
     // Find suitable physical addresses
     auto handle = dmem_map.begin();
-    u64 remaining_size = size;
-    VAddr current_addr = mapped_addr;
+    u64 remaining_size = commit_size;
+    VAddr current_addr = commit_start;
     while (handle != dmem_map.end() && remaining_size > 0) {
         if (handle->second.dma_type != PhysicalMemoryType::Pooled) {
             // Non-pooled means it's either not for pool use, or already committed.
@@ -432,8 +437,8 @@ s32 MemoryManager::PoolCommit(VAddr virtual_addr, u64 size, MemoryProt prot, s32
         new_dmem_area.memory_type = mtype;
 
         // Add the dmem area to this vma, merge it with any similar tracked areas.
-        new_vma.phys_areas[current_addr - mapped_addr] = new_dmem_handle->second;
-        MergeAdjacent(new_vma.phys_areas, new_vma.phys_areas.find(current_addr - mapped_addr));
+        new_vma.phys_areas[current_addr - commit_start] = new_dmem_handle->second;
+        MergeAdjacent(new_vma.phys_areas, new_vma.phys_areas.find(current_addr - commit_start));
 
         // Perform an address space mapping for each physical area
         void* out_addr = impl.Map(current_addr, size_to_map, new_dmem_area.base);
@@ -451,8 +456,8 @@ s32 MemoryManager::PoolCommit(VAddr virtual_addr, u64 size, MemoryProt prot, s32
     MergeAdjacent(vma_map, new_vma_handle);
 
     lk2.unlock();
-    if (IsValidGpuMapping(mapped_addr, size)) {
-        rasterizer->MapMemory(mapped_addr, size);
+    if (IsValidGpuMapping(commit_start, commit_size)) {
+        rasterizer->MapMemory(commit_start, commit_size);
     }
 
     return ORBIS_OK;
