@@ -260,11 +260,13 @@ public:
     u32 Add(const ImageResource& desc) {
         const u32 index{Add(image_resources, desc, [&desc](const auto& existing) {
             return desc.sharp_idx == existing.sharp_idx && desc.is_array == existing.is_array &&
+                   desc.is_sampled == existing.is_sampled &&
                    desc.mip_fallback_mode == existing.mip_fallback_mode &&
                    desc.constant_mip_index == existing.constant_mip_index;
         })};
         auto& image = image_resources[index];
         image.is_atomic |= desc.is_atomic;
+        image.is_sampled |= desc.is_sampled;
         image.is_written |= desc.is_written;
         return index;
     }
@@ -555,6 +557,8 @@ void PatchImageSharp(IR::Block& block, IR::Inst& inst, Info& info, Descriptors& 
         .sharp_idx = tsharp,
         .is_depth = bool(inst_info.is_depth),
         .is_atomic = is_atomic,
+        .is_sampled = inst.GetOpcode() == IR::Opcode::ImageSampleRaw ||
+                      inst.GetOpcode() == IR::Opcode::ImageQueryLod,
         .is_array = bool(inst_info.is_array),
         .is_written = is_written,
         .is_r128 = bool(inst_info.is_r128),

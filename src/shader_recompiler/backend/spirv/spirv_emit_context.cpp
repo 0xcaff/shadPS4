@@ -993,6 +993,7 @@ void EmitContext::DefineImagesAndSamplers() {
     }
     if (std::ranges::any_of(info.images, &ImageResource::is_atomic)) {
         image_u32 = TypePointer(spv::StorageClass::Image, U32[1]);
+        image_s32 = TypePointer(spv::StorageClass::Image, S32[1]);
         image_f32 = TypePointer(spv::StorageClass::Image, F32[1]);
     }
     if (info.samplers.empty()) {

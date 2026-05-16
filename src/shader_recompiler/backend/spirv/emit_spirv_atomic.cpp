@@ -18,6 +18,29 @@ std::pair<Id, Id> AtomicArgs(EmitContext& ctx) {
     return {scope, semantics};
 }
 
+enum class AtomicImageType {
+    U32,
+    S32,
+    F32,
+};
+
+AtomicImageType GetAtomicImageType(EmitContext& ctx,
+                                   const EmitContext::TextureDefinition& texture) {
+    if (texture.data_types == &ctx.U32) {
+        return AtomicImageType::U32;
+    }
+    if (texture.data_types == &ctx.S32) {
+        return AtomicImageType::S32;
+    }
+    return AtomicImageType::F32;
+}
+
+Id ImageAtomicReadF32(EmitContext& ctx, const EmitContext::TextureDefinition& texture, Id coords) {
+    const Id image{ctx.OpLoad(texture.image_type, texture.id)};
+    const Id texel{ctx.OpImageRead(ctx.F32[4], image, coords)};
+    return ctx.OpCompositeExtract(ctx.F32[1], texel, 0);
+}
+
 Id SharedAtomicU32(EmitContext& ctx, Id offset, Id value,
                    Id (Sirit::Module::*atomic_func)(Id, Id, Id, Id, Id)) {
     const Id shift_id{ctx.ConstU32(2U)};
@@ -128,14 +151,28 @@ Id BufferAtomicU64(EmitContext& ctx, IR::Inst* inst, u32 handle, Id address, Id 
 Id ImageAtomicU32(EmitContext& ctx, IR::Inst* inst, u32 handle, Id coords, Id value,
                   Id (Sirit::Module::*atomic_func)(Id, Id, Id, Id, Id)) {
     const auto& texture = ctx.images[handle & 0xFFFF];
-    const Id pointer{ctx.OpImageTexelPointer(ctx.image_u32, texture.id, coords, ctx.ConstU32(0U))};
+    const auto image_type = GetAtomicImageType(ctx, texture);
+    if (image_type == AtomicImageType::F32) {
+        LOG_WARNING(Render, "Unsupported integer atomic on non-integer image");
+        return ctx.u32_zero_value;
+    }
+    const Id result_type = image_type == AtomicImageType::S32 ? ctx.S32[1] : ctx.U32[1];
+    const Id pointer_type = image_type == AtomicImageType::S32 ? ctx.image_s32 : ctx.image_u32;
+    const Id typed_value =
+        image_type == AtomicImageType::S32 ? ctx.OpBitcast(ctx.S32[1], value) : value;
+    const Id pointer{ctx.OpImageTexelPointer(pointer_type, texture.id, coords, ctx.ConstU32(0U))};
     const auto [scope, semantics]{AtomicArgs(ctx)};
-    return (ctx.*atomic_func)(ctx.U32[1], pointer, scope, semantics, value);
+    const Id result{(ctx.*atomic_func)(result_type, pointer, scope, semantics, typed_value)};
+    return image_type == AtomicImageType::S32 ? ctx.OpBitcast(ctx.U32[1], result) : result;
 }
 
 Id ImageAtomicF32(EmitContext& ctx, IR::Inst* inst, u32 handle, Id coords, Id value,
                   Id (Sirit::Module::*atomic_func)(Id, Id, Id, Id, Id)) {
     const auto& texture = ctx.images[handle & 0xFFFF];
+    if (GetAtomicImageType(ctx, texture) != AtomicImageType::F32) {
+        LOG_WARNING(Render, "Unsupported float atomic on non-float image");
+        return ctx.f32_zero_value;
+    }
     const Id pointer{ctx.OpImageTexelPointer(ctx.image_f32, texture.id, coords, ctx.ConstU32(0U))};
     const auto [scope, semantics]{AtomicArgs(ctx)};
     return (ctx.*atomic_func)(ctx.F32[1], pointer, scope, semantics, value);
@@ -145,9 +182,22 @@ Id ImageAtomicU32CmpSwap(EmitContext& ctx, IR::Inst* inst, u32 handle, Id coords
                          Id cmp_value,
                          Id (Sirit::Module::*atomic_func)(Id, Id, Id, Id, Id, Id, Id)) {
     const auto& texture = ctx.images[handle & 0xFFFF];
-    const Id pointer{ctx.OpImageTexelPointer(ctx.image_u32, texture.id, coords, ctx.ConstU32(0U))};
+    const auto image_type = GetAtomicImageType(ctx, texture);
+    if (image_type == AtomicImageType::F32) {
+        LOG_WARNING(Render, "Unsupported integer atomic compare-swap on non-integer image");
+        return ctx.u32_zero_value;
+    }
+    const Id result_type = image_type == AtomicImageType::S32 ? ctx.S32[1] : ctx.U32[1];
+    const Id pointer_type = image_type == AtomicImageType::S32 ? ctx.image_s32 : ctx.image_u32;
+    const Id typed_value =
+        image_type == AtomicImageType::S32 ? ctx.OpBitcast(ctx.S32[1], value) : value;
+    const Id typed_cmp_value =
+        image_type == AtomicImageType::S32 ? ctx.OpBitcast(ctx.S32[1], cmp_value) : cmp_value;
+    const Id pointer{ctx.OpImageTexelPointer(pointer_type, texture.id, coords, ctx.ConstU32(0U))};
     const auto [scope, semantics]{AtomicArgs(ctx)};
-    return (ctx.*atomic_func)(ctx.U32[1], pointer, scope, semantics, semantics, value, cmp_value);
+    const Id result{(ctx.*atomic_func)(result_type, pointer, scope, semantics, semantics,
+                                       typed_value, typed_cmp_value)};
+    return image_type == AtomicImageType::S32 ? ctx.OpBitcast(ctx.U32[1], result) : result;
 }
 } // Anonymous namespace
 
@@ -384,6 +434,11 @@ Id EmitImageAtomicFMax32(EmitContext& ctx, IR::Inst* inst, u32 handle, Id coords
     if (ctx.profile.supports_image_fp32_atomic_min_max) {
         return ImageAtomicF32(ctx, inst, handle, coords, value, &Sirit::Module::OpAtomicFMax);
     }
+    const auto& texture = ctx.images[handle & 0xFFFF];
+    if (GetAtomicImageType(ctx, texture) == AtomicImageType::F32) {
+        LOG_WARNING(Render, "Falling back image float atomic max to a non-atomic read");
+        return ImageAtomicReadF32(ctx, texture, coords);
+    }
 
     const auto u32_value = ctx.OpBitcast(ctx.U32[1], value);
     const auto sign_bit_set =
@@ -400,6 +455,11 @@ Id EmitImageAtomicFMax32(EmitContext& ctx, IR::Inst* inst, u32 handle, Id coords
 Id EmitImageAtomicFMin32(EmitContext& ctx, IR::Inst* inst, u32 handle, Id coords, Id value) {
     if (ctx.profile.supports_image_fp32_atomic_min_max) {
         return ImageAtomicF32(ctx, inst, handle, coords, value, &Sirit::Module::OpAtomicFMin);
+    }
+    const auto& texture = ctx.images[handle & 0xFFFF];
+    if (GetAtomicImageType(ctx, texture) == AtomicImageType::F32) {
+        LOG_WARNING(Render, "Falling back image float atomic min to a non-atomic read");
+        return ImageAtomicReadF32(ctx, texture, coords);
     }
 
     const auto u32_value = ctx.OpBitcast(ctx.U32[1], value);
