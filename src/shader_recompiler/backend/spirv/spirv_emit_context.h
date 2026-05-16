@@ -5,6 +5,7 @@
 
 #include <array>
 #include <unordered_map>
+#include <vector>
 #include <sirit/sirit.h>
 
 #include "shader_recompiler/backend/bindings.h"
@@ -350,6 +351,8 @@ public:
     Bindings& binding;
     boost::container::small_vector<Id, 16> buf_type_ids;
     boost::container::small_vector<BufferDefinition, 16> buffers;
+    std::vector<IR::Inst*> deferred_phi_insts;
+    std::vector<std::vector<size_t>> deferred_phi_args;
     boost::container::small_vector<TextureDefinition, 8> images;
     boost::container::small_vector<Id, 4> samplers;
     std::unordered_map<u32, Id> first_to_last_label_map;

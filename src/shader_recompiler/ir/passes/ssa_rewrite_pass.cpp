@@ -16,6 +16,7 @@
 #include <map>
 #include <span>
 #include <unordered_map>
+#include <unordered_set>
 #include <variant>
 
 #include "shader_recompiler/ir/basic_block.h"
@@ -182,6 +183,23 @@ struct ReadState {
 
 class Pass {
 public:
+    explicit Pass(const IR::BlockList& blocks) {
+        std::unordered_set<IR::Block*> reachable_blocks;
+        reachable_blocks.reserve(blocks.size());
+        for (IR::Block* const block : blocks) {
+            reachable_blocks.insert(block);
+        }
+
+        for (IR::Block* const block : blocks) {
+            auto& predecessors = reachable_predecessors[block];
+            for (IR::Block* const pred : block->ImmPredecessors()) {
+                if (reachable_blocks.contains(pred)) {
+                    predecessors.push_back(pred);
+                }
+            }
+        }
+    }
+
     template <typename Type>
     void WriteVariable(Type variable, IR::Block* block, const IR::Value& value) {
         current_def.SetDef(block, variable, value);
@@ -220,7 +238,7 @@ public:
 
                     incomplete_phis[block].insert_or_assign(variable, phi);
                     stack.back().result = IR::Value{&*phi};
-                } else if (const std::span imm_preds = block->ImmPredecessors();
+                } else if (const std::span imm_preds = ReachablePredecessors(block);
                            imm_preds.size() == 1) {
                     // Optimize the common case of one predecessor: no phi needed
                     stack.back().pc = Status::SetValue;
@@ -273,10 +291,18 @@ public:
 private:
     template <typename Type>
     IR::Value AddPhiOperands(Type variable, IR::Inst& phi, IR::Block* block) {
-        for (IR::Block* const imm_pred : block->ImmPredecessors()) {
+        for (IR::Block* const imm_pred : ReachablePredecessors(block)) {
             phi.AddPhiOperand(imm_pred, ReadVariable(variable, imm_pred));
         }
         return TryRemoveTrivialPhi(phi, block, UndefOpcode(variable));
+    }
+
+    std::span<IR::Block* const> ReachablePredecessors(IR::Block* block) const {
+        const auto it = reachable_predecessors.find(block);
+        if (it == reachable_predecessors.end()) {
+            return {};
+        }
+        return it->second;
     }
 
     IR::Value TryRemoveTrivialPhi(IR::Inst& phi, IR::Block* block, IR::Opcode undef_opcode) {
@@ -322,6 +348,7 @@ private:
     }
 
     std::unordered_map<IR::Block*, std::map<Variant, IR::Inst*>> incomplete_phis;
+    std::unordered_map<IR::Block*, IR::BlockList> reachable_predecessors;
     DefTable current_def;
 };
 
@@ -418,7 +445,7 @@ void VisitBlock(Pass& pass, IR::Block* block) {
 } // Anonymous namespace
 
 void SsaRewritePass(IR::BlockList& program) {
-    Pass pass;
+    Pass pass{program};
     const auto end{program.rend()};
     for (auto block = program.rbegin(); block != end; ++block) {
         VisitBlock(pass, *block);

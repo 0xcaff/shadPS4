@@ -267,10 +267,13 @@ void Traverse(EmitContext& ctx, const IR::Program& program) {
     }
 }
 
-Id DefineMain(EmitContext& ctx, const IR::Program& program) {
+Id DefineMain(EmitContext& ctx, const IR::Program& program, const IR::BlockList& emitted_blocks) {
     const Id void_function{ctx.TypeFunction(ctx.void_id)};
     const Id main{ctx.OpFunction(ctx.void_id, spv::FunctionControlMask::MaskNone, void_function)};
     for (IR::Block* const block : program.blocks) {
+        block->SetDefinition(Id{});
+    }
+    for (IR::Block* const block : emitted_blocks) {
         block->SetDefinition(ctx.OpLabel());
     }
     Traverse(ctx, program);
@@ -497,23 +500,20 @@ void SetupFloatMode(EmitContext& ctx, const Profile& profile, const RuntimeInfo&
     }
 }
 
-void PatchPhiNodes(const IR::BlockList& blocks, EmitContext& ctx) {
-    auto inst{blocks.front()->begin()};
-    size_t block_index{0};
+void PatchPhiNodes(EmitContext& ctx) {
+    size_t deferred_phi_index{};
     ctx.PatchDeferredPhi([&](u32 phi_arg, Id first_parent) {
-        if (phi_arg == 0) {
-            ++inst;
-            if (inst == blocks[block_index]->end() || inst->GetOpcode() != IR::Opcode::Phi) {
-                do {
-                    ++block_index;
-                    inst = blocks[block_index]->begin();
-                } while (inst->GetOpcode() != IR::Opcode::Phi);
-            }
-        }
-        const Id arg = ctx.Def(inst->Arg(phi_arg));
+        ASSERT(deferred_phi_index < ctx.deferred_phi_insts.size());
+        const auto& phi_args = ctx.deferred_phi_args[deferred_phi_index];
+        ASSERT(phi_arg < phi_args.size());
+        IR::Inst* const inst = ctx.deferred_phi_insts[deferred_phi_index];
+        const Id arg = ctx.Def(inst->Arg(phi_args[phi_arg]));
         const auto parent_it = ctx.first_to_last_label_map.find(first_parent.value);
         ASSERT_MSG(parent_it != ctx.first_to_last_label_map.end(), "Missing phi parent label");
         const Id parent = parent_it->second;
+        if (phi_arg + 1 == phi_args.size()) {
+            ++deferred_phi_index;
+        }
         return std::make_pair(arg, parent);
     });
 }
@@ -522,11 +522,12 @@ void PatchPhiNodes(const IR::BlockList& blocks, EmitContext& ctx) {
 std::vector<u32> EmitSPIRV(const Profile& profile, const RuntimeInfo& runtime_info,
                            const IR::Program& program, Bindings& binding) {
     EmitContext ctx{profile, runtime_info, program.info, binding};
-    const Id main{DefineMain(ctx, program)};
+    const IR::BlockList emitted_blocks = EmitBlocks(program);
+    const Id main{DefineMain(ctx, program, emitted_blocks)};
     DefineEntryPoint(program.info, ctx, main);
     SetupCapabilities(program.info, profile, runtime_info, ctx);
     SetupFloatMode(ctx, profile, runtime_info, main);
-    PatchPhiNodes(EmitBlocks(program), ctx);
+    PatchPhiNodes(ctx);
     binding.user_data += program.info.ud_mask.NumRegs();
     return ctx.Assemble();
 }
@@ -534,12 +535,24 @@ std::vector<u32> EmitSPIRV(const Profile& profile, const RuntimeInfo& runtime_in
 Id EmitPhi(EmitContext& ctx, IR::Inst* inst) {
     const size_t num_args{inst->NumArgs()};
     boost::container::small_vector<Id, 32> blocks;
+    std::vector<size_t> phi_args;
     blocks.reserve(num_args);
+    phi_args.reserve(num_args);
     for (size_t index = 0; index < num_args; ++index) {
-        blocks.push_back(inst->PhiBlock(index)->Definition<Id>());
+        const Id block_label = inst->PhiBlock(index)->Definition<Id>();
+        if (!Sirit::ValidId(block_label)) {
+            continue;
+        }
+        blocks.push_back(block_label);
+        phi_args.push_back(index);
     }
     // The type of a phi instruction is stored in its flags
     const Id result_type{TypeId(ctx, inst->Flags<IR::Type>())};
+    if (blocks.empty()) {
+        return ctx.OpUndef(result_type);
+    }
+    ctx.deferred_phi_insts.push_back(inst);
+    ctx.deferred_phi_args.push_back(std::move(phi_args));
     return ctx.DeferredOpPhi(result_type, std::span(blocks.data(), blocks.size()));
 }
 
