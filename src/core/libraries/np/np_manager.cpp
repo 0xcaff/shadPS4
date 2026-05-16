@@ -23,6 +23,10 @@ static std::mutex g_request_mutex;
 static std::map<std::string, std::function<void()>> g_np_callbacks;
 static std::mutex g_np_callbacks_mutex;
 
+static std::map<s32, bool> g_bandwidth_test_requests;
+static std::mutex g_bandwidth_test_mutex;
+static s32 g_next_bandwidth_test_request_id = 1;
+
 // Internal types for storing request-related information
 enum class NpRequestState {
     None = 0,
@@ -770,66 +774,59 @@ s32 PS4_SYSV_ABI sceNpRegisterStateCallbackForToolkit(OrbisNpStateCallbackForNpT
     return id;
 }
 
-s32 PS4_SYSV_ABI sceNpBandwidthTestInitStart(u64 arg0, u64 arg1, u64 arg2, u64 arg3, u64 arg4,
-                                             u64 arg5) {
-    constexpr s32 OrbisNpUtilErrorAlreadyInitialized = 0x80559c00;
-    static u32 call_count = 0;
-    call_count++;
-    const bool dump_call = call_count <= 4 || call_count % 60 == 0;
-    if (dump_call) {
-        LOG_ERROR(Lib_NpManager,
-                  "(STUBBED) sceNpBandwidthTestInitStart call={} arg0={:#x} arg1={:#x} "
-                  "arg2={:#x} arg3={:#x} arg4={:#x} arg5={:#x}",
-                  call_count, arg0, arg1, arg2, arg3, arg4, arg5);
+s32 PS4_SYSV_ABI sceNpBandwidthTestInitStart(const void* param) {
+    if (param == nullptr) {
+        return ORBIS_NP_ERROR_INVALID_ARGUMENT;
     }
-    if (call_count > 1) {
-        return OrbisNpUtilErrorAlreadyInitialized;
+
+    const auto size = *static_cast<const u64*>(param);
+    LOG_DEBUG(Lib_NpManager, "(STUBBED) sceNpBandwidthTestInitStart param_size={:#x}", size);
+
+    std::scoped_lock lk{g_bandwidth_test_mutex};
+
+    const auto req_id = g_next_bandwidth_test_request_id++;
+    g_bandwidth_test_requests[req_id] = false;
+    return req_id;
+}
+
+s32 PS4_SYSV_ABI sceNpBandwidthTestGetStatus(s32 req_id, s32* status) {
+    if (status == nullptr) {
+        return ORBIS_NP_ERROR_INVALID_ARGUMENT;
     }
-    if (arg0 != 0) {
-        const auto size = *reinterpret_cast<const u64*>(arg0);
-        if (size >= 0x38 && size < 0x1000) {
-            if (dump_call) {
-                const auto* words = reinterpret_cast<const u32*>(arg0);
-                LOG_ERROR(Lib_NpManager,
-                          "sceNpBandwidthTestInitStart before: {:#010x} {:#010x} {:#010x} "
-                          "{:#010x} {:#010x} {:#010x} {:#010x} {:#010x}",
-                          words[0], words[1], words[2], words[3], words[4], words[5], words[6],
-                          words[7]);
-            }
-            std::memset(reinterpret_cast<void*>(arg0 + sizeof(u64)), 0, size - sizeof(u64));
-            auto* words = reinterpret_cast<u32*>(arg0);
-            words[2] = 3;          // Complete.
-            words[3] = ORBIS_OK;   // Result.
-            words[4] = 50'000'000; // Download bps.
-            words[6] = 10'000'000; // Upload bps.
-            if (dump_call) {
-                LOG_ERROR(Lib_NpManager,
-                          "sceNpBandwidthTestInitStart after: {:#010x} {:#010x} {:#010x} "
-                          "{:#010x} {:#010x} {:#010x} {:#010x} {:#010x}",
-                          words[0], words[1], words[2], words[3], words[4], words[5], words[6],
-                          words[7]);
-            }
-        } else if (dump_call) {
-            LOG_ERROR(Lib_NpManager, "sceNpBandwidthTestInitStart unexpected size={:#x}", size);
-        }
+
+    std::scoped_lock lk{g_bandwidth_test_mutex};
+    const auto request = g_bandwidth_test_requests.find(req_id);
+    if (request == g_bandwidth_test_requests.end()) {
+        return ORBIS_NP_ERROR_REQUEST_NOT_FOUND;
     }
+    if (request->second) {
+        return ORBIS_NP_ERROR_ABORTED;
+    }
+
+    constexpr s32 OrbisNpBandwidthTestStatusDone = 2;
+    *status = OrbisNpBandwidthTestStatusDone;
+    LOG_DEBUG(Lib_NpManager, "(STUBBED) sceNpBandwidthTestGetStatus req_id={:#x}, status={}",
+              req_id, *status);
     return ORBIS_OK;
 }
 
-s32 PS4_SYSV_ABI sceNpBandwidthTestGetStatus(u64 arg0, u64 arg1, u64 arg2, u64 arg3, u64 arg4,
-                                             u64 arg5) {
-    LOG_ERROR(Lib_NpManager,
-              "(STUBBED) sceNpBandwidthTestGetStatus arg0={:#x} arg1={:#x} arg2={:#x} "
-              "arg3={:#x} arg4={:#x} arg5={:#x}",
-              arg0, arg1, arg2, arg3, arg4, arg5);
-    if (arg0 != 0) {
-        *reinterpret_cast<u32*>(arg0) = 3;
+s32 PS4_SYSV_ABI sceNpBandwidthTestAbort(s32 req_id) {
+    std::scoped_lock lk{g_bandwidth_test_mutex};
+
+    const auto request = g_bandwidth_test_requests.find(req_id);
+    if (request == g_bandwidth_test_requests.end()) {
+        return ORBIS_NP_ERROR_REQUEST_NOT_FOUND;
     }
+
+    request->second = true;
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceNpBandwidthTestShutdown() {
     LOG_DEBUG(Lib_NpManager, "(STUBBED) sceNpBandwidthTestShutdown called");
+    std::scoped_lock lk{g_bandwidth_test_mutex};
+    g_bandwidth_test_requests.clear();
+    g_next_bandwidth_test_request_id = 1;
     return ORBIS_OK;
 }
 
@@ -904,6 +901,8 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
                  sceNpBandwidthTestInitStart);
     LIB_FUNCTION("BYIZGKm6bO4", "libSceNpUtility", 1, "libSceNpUtility",
                  sceNpBandwidthTestGetStatus);
+    LIB_FUNCTION("kvdMF48mB3Y", "libSceNpUtility", 1, "libSceNpUtility",
+                 sceNpBandwidthTestAbort);
     LIB_FUNCTION("pLr1fEQS1z8", "libSceNpUtility", 1, "libSceNpUtility",
                  sceNpBandwidthTestShutdown);
 
