@@ -639,7 +639,7 @@ int PosixSocket::GetSocketOptions(int level, int optname, void* optval, u32* opt
         case ORBIS_NET_SO_ERROR_EX: {
             socklen_t optlen_temp = *optlen;
             auto retval = ConvertReturnErrorCode(
-                getsockopt(sock, level, SO_ERROR, (char*)optval, &optlen_temp));
+                getsockopt(sock, native_level, SO_ERROR, (char*)optval, &optlen_temp));
             *optlen = optlen_temp;
             if (retval < 0) {
                 s32 r = *Libraries::Kernel::__Error();
