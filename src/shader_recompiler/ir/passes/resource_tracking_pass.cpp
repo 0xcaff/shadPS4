@@ -786,11 +786,25 @@ void PatchGlobalDataShareAccess(IR::Block& block, IR::Inst& inst, Info& info,
                 ir.BufferAtomicIMin(handle, address_dwords, inst.Arg(1), is_signed, {}));
             break;
         }
+        case IR::Opcode::SharedAtomicSMin64:
+        case IR::Opcode::SharedAtomicUMin64: {
+            const bool is_signed = inst.GetOpcode() == IR::Opcode::SharedAtomicSMin64;
+            inst.ReplaceUsesWith(ir.BufferAtomicIMin(handle, address_qwords, IR::U64{inst.Arg(1)},
+                                                     is_signed, {}));
+            break;
+        }
         case IR::Opcode::SharedAtomicSMax32:
         case IR::Opcode::SharedAtomicUMax32: {
             const bool is_signed = inst.GetOpcode() == IR::Opcode::SharedAtomicSMax32;
             inst.ReplaceUsesWith(
                 ir.BufferAtomicIMax(handle, address_dwords, inst.Arg(1), is_signed, {}));
+            break;
+        }
+        case IR::Opcode::SharedAtomicSMax64:
+        case IR::Opcode::SharedAtomicUMax64: {
+            const bool is_signed = inst.GetOpcode() == IR::Opcode::SharedAtomicSMax64;
+            inst.ReplaceUsesWith(ir.BufferAtomicIMax(handle, address_qwords, IR::U64{inst.Arg(1)},
+                                                     is_signed, {}));
             break;
         }
         case IR::Opcode::SharedAtomicInc32:
@@ -1311,7 +1325,7 @@ void ResourceTrackingPass(IR::Program& program, const Profile& profile) {
 
     // Pass 1: Track resource sharps
     Descriptors descriptors{info};
-    for (IR::Block* const block : program.blocks) {
+    for (IR::Block* const block : program.post_order_blocks) {
         for (IR::Inst& inst : block->Instructions()) {
             if (IsBufferInstruction(inst)) {
                 PatchBufferSharp(*block, inst, info, descriptors, profile);
@@ -1322,7 +1336,7 @@ void ResourceTrackingPass(IR::Program& program, const Profile& profile) {
     }
 
     // Pass 2: Patch instruction args
-    for (IR::Block* const block : program.blocks) {
+    for (IR::Block* const block : program.post_order_blocks) {
         for (IR::Inst& inst : block->Instructions()) {
             if (IsBufferInstruction(inst)) {
                 PatchBufferArgs(*block, inst, info);
