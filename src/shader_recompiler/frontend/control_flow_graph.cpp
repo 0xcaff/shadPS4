@@ -190,11 +190,13 @@ void CFG::EmitLabels() {
                 if (auto t = ResolveSetPcTarget(inst_list, i, index_to_pc)) {
                     target = *t;
                 } else {
-                    ASSERT_MSG(
-                        false,
-                        "S_SETPC_B64 without a resolvable offset at PC {:#x} (Index {}): Involved "
-                        "instructions not recognized or invalid pattern",
-                        pc, i);
+                    LOG_WARNING(Render_Recompiler,
+                                "Treating unresolved dynamic S_SETPC_B64 at PC {:#x} (Index {}) "
+                                "as a terminal branch",
+                                pc, i);
+                    AddLabel(pc + inst.length);
+                    pc += inst.length;
+                    continue;
                 }
             }
             AddLabel(target);
@@ -392,10 +394,14 @@ void CFG::LinkBlocks() {
         u32 target_pc = 0;
         if (end_inst.opcode == Opcode::S_SETPC_B64) {
             auto tgt = ResolveSetPcTarget(inst_list, block.end_index, index_to_pc);
-            ASSERT_MSG(tgt,
-                       "S_SETPC_B64 without a resolvable offset at PC {:#x} (Index {}): Involved "
-                       "instructions not recognized or invalid pattern",
-                       branch_pc, block.end_index);
+            if (!tgt) {
+                LOG_WARNING(Render_Recompiler,
+                            "Treating unresolved dynamic S_SETPC_B64 at PC {:#x} (Index {}) as "
+                            "a terminal branch",
+                            branch_pc, block.end_index);
+                block.end_class = EndClass::Exit;
+                continue;
+            }
             target_pc = *tgt;
         } else {
             target_pc = end_inst.BranchTarget(branch_pc);

@@ -35,6 +35,21 @@ static IR::U64 PackThreadBitMask(IR::IREmitter& ir, const IR::U1& value) {
     return ir.PackUint2x32(ir.CompositeConstruct(lo, hi));
 }
 
+static IR::U1 ThreadBitFromDwordMask(IR::IREmitter& ir, u32 mask) {
+    if (mask == 0) {
+        return ir.Imm1(false);
+    }
+    if (mask == std::numeric_limits<u32>::max()) {
+        return ir.Imm1(true);
+    }
+
+    const IR::U32 lane = ir.BitwiseAnd(ir.LaneId(), ir.Imm32(0x3f));
+    const IR::U1 is_low_lane = ir.ILessThan(lane, ir.Imm32(32), false);
+    const IR::U32 shift = ir.BitwiseAnd(lane, ir.Imm32(0x1f));
+    const IR::U32 bit = ir.BitwiseAnd(ir.ShiftRightLogical(ir.Imm32(mask), shift), ir.Imm32(1));
+    return ir.LogicalAnd(is_low_lane, ir.INotEqual(bit, ir.Imm32(0)));
+}
+
 static IR::VectorReg IterateBarycentrics(const RuntimeInfo& runtime_info, auto&& set_attribute) {
     if (runtime_info.stage != Stage::Fragment) {
         return IR::VectorReg::V0;
@@ -284,9 +299,7 @@ IR::U1 Translator::GetSrc1(const InstOperand& operand) {
                    "SignedConstIntNeg must be -1");
         return ir.Imm1(true);
     case OperandField::LiteralConst:
-        ASSERT_MSG(operand.code == 0 || operand.code == std::numeric_limits<u32>::max(),
-                   "Unsupported literal {:#x}", operand.code);
-        return ir.Imm1(operand.code & 1);
+        return ThreadBitFromDwordMask(ir, operand.code);
     default:
         UNREACHABLE_MSG("Unknown field {}", u32(operand.field));
     }
