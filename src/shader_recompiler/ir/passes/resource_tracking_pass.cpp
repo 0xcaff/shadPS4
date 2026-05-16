@@ -946,7 +946,66 @@ IR::Value FixCubeCoords(IR::IREmitter& ir, const AmdGpu::Image& image, const IR:
     return ir.CompositeConstruct(fixed_x, fixed_y, face);
 }
 
-void PatchImageSampleArgs(IR::Block& block, IR::Inst& inst, Info& info,
+bool IsRuntimeOffset(const IR::Value& offset) {
+    if (offset.IsEmpty() || offset.IsImmediate()) {
+        return false;
+    }
+    const IR::Inst* const inst = offset.TryInstRecursive();
+    if (!inst || !inst->AreAllArgsImmediates()) {
+        return true;
+    }
+    return inst->GetOpcode() != IR::Opcode::CompositeConstructU32x2 &&
+           inst->GetOpcode() != IR::Opcode::CompositeConstructU32x3;
+}
+
+IR::Value OffsetComponent(IR::IREmitter& ir, const IR::Value& offset, u32 comp) {
+    return offset.Type() == IR::Type::U32 ? offset : ir.CompositeExtract(offset, comp);
+}
+
+IR::F32 OffsetToCoord(IR::IREmitter& ir, const IR::Value& offset, const IR::Value& dimensions,
+                      u32 offset_comp, u32 dim_comp, bool unnormalized) {
+    const auto offset_float =
+        ir.ConvertSToF(32, 32, IR::U32{OffsetComponent(ir, offset, offset_comp)});
+    if (unnormalized) {
+        return IR::F32{offset_float};
+    }
+    const auto dim_float =
+        ir.ConvertUToF(32, 32, IR::U32{ir.CompositeExtract(dimensions, dim_comp)});
+    return ir.FPDiv(offset_float, dim_float);
+}
+
+IR::Value ApplyRuntimeOffsetToCoords(IR::IREmitter& ir, AmdGpu::ImageType view_type,
+                                     const IR::Value& coords, const IR::Value& offset,
+                                     const IR::Value& dimensions, bool unnormalized) {
+    const auto add_offset = [&](const IR::Value& coord, u32 offset_comp, u32 dim_comp) {
+        return ir.FPAdd(IR::F32{coord},
+                        OffsetToCoord(ir, offset, dimensions, offset_comp, dim_comp, unnormalized));
+    };
+
+    switch (view_type) {
+    case AmdGpu::ImageType::Color1D:
+        return add_offset(coords, 0, 0);
+    case AmdGpu::ImageType::Color1DArray:
+        return ir.CompositeConstruct(add_offset(ir.CompositeExtract(coords, 0), 0, 0),
+                                     ir.CompositeExtract(coords, 1));
+    case AmdGpu::ImageType::Color2D:
+    case AmdGpu::ImageType::Color2DMsaa:
+        return ir.CompositeConstruct(add_offset(ir.CompositeExtract(coords, 0), 0, 0),
+                                     add_offset(ir.CompositeExtract(coords, 1), 1, 1));
+    case AmdGpu::ImageType::Color2DArray:
+        return ir.CompositeConstruct(add_offset(ir.CompositeExtract(coords, 0), 0, 0),
+                                     add_offset(ir.CompositeExtract(coords, 1), 1, 1),
+                                     ir.CompositeExtract(coords, 2));
+    case AmdGpu::ImageType::Color3D:
+        return ir.CompositeConstruct(add_offset(ir.CompositeExtract(coords, 0), 0, 0),
+                                     add_offset(ir.CompositeExtract(coords, 1), 1, 1),
+                                     add_offset(ir.CompositeExtract(coords, 2), 2, 2));
+    default:
+        UNREACHABLE();
+    }
+}
+
+void PatchImageSampleArgs(IR::Block& block, IR::Inst& inst, Info& info, const Profile& profile,
                           const ImageResource& image_res, const AmdGpu::Image& image) {
     const auto handle = inst.Arg(0);
     const auto& sampler_res = info.samplers[(handle.U32() >> 16) & 0xFFFF];
@@ -1049,7 +1108,11 @@ void PatchImageSampleArgs(IR::Block& block, IR::Inst& inst, Info& info,
     const bool is_msaa = view_type == AmdGpu::ImageType::Color2DMsaa ||
                          view_type == AmdGpu::ImageType::Color2DMsaaArray;
     const bool unnormalized = sampler.force_unnormalized || inst_info.is_unnormalized;
-    const bool needs_dimentions = (!is_msaa && unnormalized) || (is_msaa && !unnormalized);
+    const bool fold_runtime_offset = !inst_info.is_gather && !is_msaa &&
+                                     !profile.supports_runtime_image_sample_offsets &&
+                                     IsRuntimeOffset(offset);
+    const bool needs_dimentions =
+        (!is_msaa && unnormalized) || (is_msaa && !unnormalized) || fold_runtime_offset;
     const auto dimensions =
         needs_dimentions ? ir.ImageQueryDimension(handle, ir.Imm32(0u), ir.Imm1(false), inst_info)
                          : IR::Value{};
@@ -1105,31 +1168,38 @@ void PatchImageSampleArgs(IR::Block& block, IR::Inst& inst, Info& info,
                         : inst_info.force_level0 ? ir.Imm32(0.0f)
                                                  : IR::F32{};
     const IR::F32 lod_clamp = inst_info.has_lod_clamp ? get_addr_reg(addr_reg++) : IR::F32{};
+    const IR::Value sample_coords =
+        fold_runtime_offset
+            ? ApplyRuntimeOffsetToCoords(ir, view_type, coords, offset, dimensions, unnormalized)
+            : coords;
+    const IR::Value sample_offset = fold_runtime_offset ? IR::Value{} : offset;
 
     auto texel = [&] -> IR::Value {
         if (is_msaa) {
-            return ir.ImageRead(handle, coords, {}, ir.Imm32(0U), inst_info);
+            return ir.ImageRead(handle, sample_coords, {}, ir.Imm32(0U), inst_info);
         }
         if (inst_info.is_gather) {
             if (inst_info.is_depth) {
-                return ir.ImageGatherDref(handle, coords, offset, dref, inst_info);
+                return ir.ImageGatherDref(handle, sample_coords, sample_offset, dref, inst_info);
             }
-            return ir.ImageGather(handle, coords, offset, inst_info);
+            return ir.ImageGather(handle, sample_coords, sample_offset, inst_info);
         }
         if (inst_info.has_derivatives) {
-            return ir.ImageGradient(handle, coords, derivatives_dx, derivatives_dy, offset,
-                                    lod_clamp, inst_info);
+            return ir.ImageGradient(handle, sample_coords, derivatives_dx, derivatives_dy,
+                                    sample_offset, lod_clamp, inst_info);
         }
         if (inst_info.is_depth) {
             if (explicit_lod) {
-                return ir.ImageSampleDrefExplicitLod(handle, coords, dref, lod, offset, inst_info);
+                return ir.ImageSampleDrefExplicitLod(handle, sample_coords, dref, lod,
+                                                     sample_offset, inst_info);
             }
-            return ir.ImageSampleDrefImplicitLod(handle, coords, dref, bias, offset, inst_info);
+            return ir.ImageSampleDrefImplicitLod(handle, sample_coords, dref, bias, sample_offset,
+                                                 inst_info);
         }
         if (explicit_lod) {
-            return ir.ImageSampleExplicitLod(handle, coords, lod, offset, inst_info);
+            return ir.ImageSampleExplicitLod(handle, sample_coords, lod, sample_offset, inst_info);
         }
-        return ir.ImageSampleImplicitLod(handle, coords, bias, offset, inst_info);
+        return ir.ImageSampleImplicitLod(handle, sample_coords, bias, sample_offset, inst_info);
     }();
 
     auto converted = ApplyReadNumberConversionVec4(ir, texel, image.GetNumberConversion());
@@ -1139,7 +1209,7 @@ void PatchImageSampleArgs(IR::Block& block, IR::Inst& inst, Info& info,
     inst.ReplaceUsesWith(converted);
 }
 
-void PatchImageArgs(IR::Block& block, IR::Inst& inst, Info& info) {
+void PatchImageArgs(IR::Block& block, IR::Inst& inst, Info& info, const Profile& profile) {
     // Nothing to patch for dimension query.
     if (inst.GetOpcode() == IR::Opcode::ImageQueryDimensions) {
         return;
@@ -1152,7 +1222,7 @@ void PatchImageArgs(IR::Block& block, IR::Inst& inst, Info& info) {
 
     // Sample instructions must be handled separately using address register data.
     if (inst.GetOpcode() == IR::Opcode::ImageSampleRaw) {
-        return PatchImageSampleArgs(block, inst, info, image_res, image);
+        return PatchImageSampleArgs(block, inst, info, profile, image_res, image);
     }
 
     IR::IREmitter ir{block, IR::Block::InstructionList::s_iterator_to(inst)};
@@ -1257,7 +1327,7 @@ void ResourceTrackingPass(IR::Program& program, const Profile& profile) {
             if (IsBufferInstruction(inst)) {
                 PatchBufferArgs(*block, inst, info);
             } else if (IsImageInstruction(inst)) {
-                PatchImageArgs(*block, inst, info);
+                PatchImageArgs(*block, inst, info, profile);
             } else if (IsDataRingInstruction(inst)) {
                 PatchGlobalDataShareAccess(*block, inst, info, descriptors, profile);
             }
