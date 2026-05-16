@@ -648,6 +648,15 @@ int PS4_SYSV_ABI scePadSetMotionSensorState(s32 handle, bool bEnable) {
     // (assuming the controller supports it)
 }
 
+int PS4_SYSV_ABI scePadSetAngularVelocityBiasCorrectionState(s32 handle, bool bEnable) {
+    auto controller_id = GameControllers::GetControllerIndexFromControllerID(handle);
+    if (!controller_id) {
+        return ORBIS_PAD_ERROR_INVALID_HANDLE;
+    }
+    LOG_DEBUG(Lib_Pad, "called handle = {}, enabled = {}", handle, bEnable);
+    return ORBIS_OK;
+}
+
 int PS4_SYSV_ABI scePadSetProcessFocus() {
     LOG_ERROR(Lib_Pad, "(STUBBED) called");
     return ORBIS_OK;
@@ -749,11 +758,6 @@ int PS4_SYSV_ABI scePadVirtualDeviceGetRemoteSetting() {
 }
 
 int PS4_SYSV_ABI scePadVirtualDeviceInsertData() {
-    LOG_ERROR(Lib_Pad, "(STUBBED) called");
-    return ORBIS_OK;
-}
-
-int PS4_SYSV_ABI Func_28B998C7D8A3DA1D() {
     LOG_ERROR(Lib_Pad, "(STUBBED) called");
     return ORBIS_OK;
 }
@@ -870,7 +874,8 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
                  scePadVirtualDeviceDisableButtonRemapping);
     LIB_FUNCTION("LKXfw7VJYqg", "libScePad", 1, "libScePad", scePadVirtualDeviceGetRemoteSetting);
     LIB_FUNCTION("IWOyO5jKuZg", "libScePad", 1, "libScePad", scePadVirtualDeviceInsertData);
-    LIB_FUNCTION("KLmYx9ij2h0", "libScePad", 1, "libScePad", Func_28B998C7D8A3DA1D);
+    LIB_FUNCTION("KLmYx9ij2h0", "libScePad", 1, "libScePad",
+                 scePadSetAngularVelocityBiasCorrectionState);
     LIB_FUNCTION("KY0hSB+Uyfo", "libScePad", 1, "libScePad", Func_298D21481F94C9FA);
     LIB_FUNCTION("UeUUvNOgXKU", "libScePad", 1, "libScePad", Func_51E514BCD3A05CA5);
     LIB_FUNCTION("ickjfjk9okM", "libScePad", 1, "libScePad", Func_89C9237E393DA243);
