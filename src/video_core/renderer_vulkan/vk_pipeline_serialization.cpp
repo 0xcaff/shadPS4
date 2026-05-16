@@ -13,7 +13,7 @@
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
 static constexpr u32 ShaderBinaryVersion = 1u;
-static constexpr u32 ShaderMetaVersion = 1u;
+static constexpr u32 ShaderMetaVersion = 2u;
 static constexpr u32 PipelineKeyVersion = 1u;
 } // namespace Serialization
 
@@ -372,6 +372,7 @@ void Info::Serialize(Serialization::Archive& ar) const {
 
     info.Write(this, sizeof(InfoPersistent));
     info.Write(flattened_ud_buf);
+    info.Write(runtime_ud_sharps);
     srt_info.Serialize(ar);
 }
 
@@ -380,6 +381,7 @@ bool Info::Deserialize(Serialization::Archive& ar) {
 
     info.Read(this, sizeof(Shader::InfoPersistent));
     info.Read(flattened_ud_buf);
+    info.Read(runtime_ud_sharps);
 
     return srt_info.Deserialize(ar);
 }

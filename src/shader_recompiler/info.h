@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <algorithm>
+#include <array>
 #include <span>
 #include <vector>
 #include <boost/container/static_vector.hpp>
@@ -81,6 +83,29 @@ struct InfoPersistent {
 };
 
 struct Info : InfoPersistent {
+    static constexpr u32 RuntimeSharpMaxDwords = 8;
+
+    struct RuntimeUserDataSharp {
+        enum class Source : u32 {
+            Immediate,
+            UserData,
+            Flatbuf,
+        };
+
+        struct Dword {
+            Source source{};
+            u32 value{};
+
+            bool operator==(const Dword&) const = default;
+        };
+
+        u32 dst_off_dw{};
+        u32 num_dwords{};
+        std::array<Dword, RuntimeSharpMaxDwords> dwords{};
+
+        bool operator==(const RuntimeUserDataSharp&) const = default;
+    };
+
     struct AttributeFlags {
         bool Get(IR::Attribute attrib, u32 comp = 0) const {
             return flags[Index(attrib)] & (1 << comp);
@@ -118,6 +143,7 @@ struct Info : InfoPersistent {
 
     std::span<const u32> user_data;
     std::vector<u32> flattened_ud_buf;
+    std::vector<RuntimeUserDataSharp> runtime_ud_sharps;
     PersistentSrtInfo srt_info;
 
     AttributeFlags loads{};
@@ -195,6 +221,47 @@ struct Info : InfoPersistent {
         if (srt_info.walker_func) {
             srt_info.walker_func(user_data.data(), flattened_ud_buf.data());
         }
+        for (const auto& sharp : runtime_ud_sharps) {
+            for (u32 i = 0; i < sharp.num_dwords; ++i) {
+                const auto& dword = sharp.dwords[i];
+                u32 value{};
+                switch (dword.source) {
+                case RuntimeUserDataSharp::Source::Immediate:
+                    value = dword.value;
+                    break;
+                case RuntimeUserDataSharp::Source::UserData:
+                    ASSERT(dword.value < user_data.size());
+                    value = user_data[dword.value];
+                    break;
+                case RuntimeUserDataSharp::Source::Flatbuf:
+                    ASSERT(dword.value < flattened_ud_buf.size());
+                    value = flattened_ud_buf[dword.value];
+                    break;
+                }
+                flattened_ud_buf[sharp.dst_off_dw + i] = value;
+            }
+        }
+    }
+
+    u32 AddRuntimeUserDataSharp(std::span<const RuntimeUserDataSharp::Dword> dwords) {
+        ASSERT(dwords.size() <= RuntimeSharpMaxDwords);
+        const auto matches = [&](const RuntimeUserDataSharp& existing) {
+            return existing.num_dwords == dwords.size() &&
+                   std::ranges::equal(dwords, std::span{existing.dwords.data(), dwords.size()});
+        };
+        const auto it = std::ranges::find_if(runtime_ud_sharps, matches);
+        if (it != runtime_ud_sharps.end()) {
+            return it->dst_off_dw;
+        }
+
+        RuntimeUserDataSharp sharp{
+            .dst_off_dw = srt_info.flattened_bufsize_dw,
+            .num_dwords = static_cast<u32>(dwords.size()),
+        };
+        std::ranges::copy(dwords, sharp.dwords.begin());
+        srt_info.flattened_bufsize_dw += sharp.num_dwords;
+        runtime_ud_sharps.push_back(sharp);
+        return sharp.dst_off_dw;
     }
 
     void ReadTessConstantBuffer(TessellationDataConstantBuffer& tess_constants) const {

@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <array>
+#include <span>
+
 #include "shader_recompiler/frontend/control_flow_graph.h"
 #include "shader_recompiler/info.h"
 #include "shader_recompiler/ir/basic_block.h"
@@ -500,6 +503,54 @@ SharpLocation TrackSharp(const IR::Inst* inst, const IR::Block& current_parent, 
     return SharpLocationFromSource(sources[0]);
 }
 
+std::optional<SharpLocation> TryBuildRuntimeSharpFromComposite(Info& info, const IR::Inst* handle,
+                                                               u32 num_dwords) {
+    if (handle->GetOpcode() != IR::Opcode::CompositeConstructU32x4 ||
+        num_dwords > Info::RuntimeSharpMaxDwords) {
+        return std::nullopt;
+    }
+
+    std::array<Info::RuntimeUserDataSharp::Dword, Info::RuntimeSharpMaxDwords> dwords{};
+    bool needs_runtime_materialization = false;
+    for (u32 i = 0; i < num_dwords; ++i) {
+        const IR::Value arg = handle->Arg(i);
+        auto& dword = dwords[i];
+        if (arg.IsImmediate()) {
+            dword = {
+                .source = Info::RuntimeUserDataSharp::Source::Immediate,
+                .value = arg.U32(),
+            };
+            continue;
+        }
+
+        const IR::Inst* inst = arg.InstRecursive();
+        if (inst->GetOpcode() == IR::Opcode::GetUserData) {
+            dword = {
+                .source = Info::RuntimeUserDataSharp::Source::UserData,
+                .value = static_cast<u32>(inst->Arg(0).ScalarReg()),
+            };
+            needs_runtime_materialization = true;
+        } else if (inst->GetOpcode() == IR::Opcode::ReadConst && inst->Flags<u32>() != 0) {
+            dword = {
+                .source = Info::RuntimeUserDataSharp::Source::Flatbuf,
+                .value = inst->Flags<u32>(),
+            };
+            needs_runtime_materialization = true;
+        } else {
+            return std::nullopt;
+        }
+    }
+
+    if (!needs_runtime_materialization) {
+        return std::nullopt;
+    }
+
+    const auto sharp_idx =
+        info.AddRuntimeUserDataSharp(std::span{dwords.data(), static_cast<size_t>(num_dwords)});
+    info.RefreshFlatBuf();
+    return sharp_idx;
+}
+
 void PatchBufferSharp(IR::Block& block, IR::Inst& inst, Info& info, Descriptors& descriptors,
                       const Profile& profile) {
     IR::Inst* handle = inst.Arg(0).InstRecursive();
@@ -524,6 +575,16 @@ void PatchBufferSharp(IR::Block& block, IR::Inst& inst, Info& info, Descriptors&
             .used_types = BufferDataType(inst, profile, buffer.GetNumberFmt()),
             .inline_cbuf = buffer,
             .buffer_type = BufferType::Guest,
+        });
+    } else if (const auto runtime_sharp_idx = TryBuildRuntimeSharpFromComposite(info, handle, 4)) {
+        const auto buffer = info.ReadUdSharp<AmdGpu::Buffer>(*runtime_sharp_idx);
+        buffer_binding = descriptors.Add(BufferResource{
+            .sharp_idx = *runtime_sharp_idx,
+            .used_types = BufferDataType(inst, profile, buffer.GetNumberFmt()),
+            .buffer_type = BufferType::Guest,
+            .is_written = IsBufferStore(inst),
+            .is_formatted = inst.GetOpcode() == IR::Opcode::LoadBufferFormatF32 ||
+                            inst.GetOpcode() == IR::Opcode::StoreBufferFormatF32,
         });
     } else {
         // Normal buffer resource.
@@ -660,6 +721,13 @@ void PatchImageSharp(IR::Block& block, IR::Inst& inst, Info& info, Descriptors& 
                 .sharp_idx = std::numeric_limits<u32>::max(),
                 .inline_sampler = inline_sampler,
                 .is_inline_sampler = true,
+            });
+        } else if (const auto runtime_ssharp =
+                       TryBuildRuntimeSharpFromComposite(info, sampler, 4)) {
+            sampler_binding = descriptors.Add(SamplerResource{
+                .sharp_idx = *runtime_ssharp,
+                .is_inline_sampler = false,
+                .associated_image = image_binding,
             });
         } else {
             // Normal sampler resource.
@@ -1346,6 +1414,8 @@ void ResourceTrackingPass(IR::Program& program, const Profile& profile) {
             }
         }
     }
+
+    info.RefreshFlatBuf();
 }
 
 } // namespace Shader::Optimization
