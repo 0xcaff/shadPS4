@@ -11,11 +11,16 @@ namespace Shader::Backend::SPIRV {
 using Sirit::Id;
 
 constexpr u32 SPIRV_VERSION_1_5 = 0x00010500;
+constexpr u32 MaxAuxBuiltinLocation = IR::NumParams - 2;
 
 struct QuadRectListEmitter : public Sirit::Module {
-    explicit QuadRectListEmitter(const FragmentRuntimeInfo& fs_info_, u32 vs_output_param_mask_)
+    explicit QuadRectListEmitter(const FragmentRuntimeInfo& fs_info_, u32 vs_output_param_mask_,
+                                 bool passthrough_point_size_, bool passthrough_layer_,
+                                 bool passthrough_viewport_)
         : Sirit::Module{SPIRV_VERSION_1_5}, fs_info{fs_info_},
-          vs_output_param_mask{vs_output_param_mask_} {
+          vs_output_param_mask{vs_output_param_mask_},
+          passthrough_point_size{passthrough_point_size_}, passthrough_layer{passthrough_layer_},
+          passthrough_viewport{passthrough_viewport_} {
         void_id = TypeVoid();
         bool_id = TypeBool();
         float_id = TypeFloat(32);
@@ -31,6 +36,15 @@ struct QuadRectListEmitter : public Sirit::Module {
         float_min_one = Constant(float_id, -1.0f);
         vec4_zero = ConstantComposite(vec4_id, float_zero, float_zero, float_zero, float_zero);
         int_zero = Constant(int_id, 0);
+
+        u32 used_locations = vs_output_param_mask;
+        if (passthrough_layer) {
+            layer_location = FindAuxLocation(used_locations);
+            used_locations |= 1U << layer_location;
+        }
+        if (passthrough_viewport) {
+            viewport_location = FindAuxLocation(used_locations);
+        }
 
         const Id float_arr{TypeArray(float_id, Constant(uint_id, 1U))};
         gl_per_vertex_type = TypeStruct(vec4_id, float_id, float_arr, float_arr);
@@ -118,6 +132,7 @@ struct QuadRectListEmitter : public Sirit::Module {
         const Id in_ptr{OpAccessChain(input_vec4, gl_in, index, Int(0))};
         const Id position{OpSelect(vec4_id, invocation_3, pos3, OpLoad(vec4_id, in_ptr))};
         OpStore(OpAccessChain(output_vec4, gl_out, invocation_id, Int(0)), position);
+        CopyTcsBuiltins(invocation_id, index);
 
         // Set attributes
         for (int i = 0; i < inputs.size(); i++) {
@@ -168,6 +183,7 @@ struct QuadRectListEmitter : public Sirit::Module {
         // gl_out[gl_InvocationID].gl_Position = gl_in[gl_InvocationID].gl_Position;
         const Id in_position{OpLoad(vec4_id, OpAccessChain(input_vec4, gl_in, index, Int(0)))};
         OpStore(OpAccessChain(output_vec4, gl_out, invocation_id, Int(0)), in_position);
+        CopyTcsBuiltins(invocation_id, index);
 
         for (int i = 0; i < inputs.size(); i++) {
             if (!input_present[i]) {
@@ -199,6 +215,7 @@ struct QuadRectListEmitter : public Sirit::Module {
         const Id output_vec4{TypePointer(spv::StorageClass::Output, vec4_id)};
         const Id position{OpLoad(vec4_id, OpAccessChain(input_vec4, gl_in, index, Int(0)))};
         OpStore(OpAccessChain(output_vec4, gl_per_vertex, Int(0)), position);
+        CopyTesBuiltins(index);
 
         // out_paramN = in_paramN[index];
         for (int i = 0; i < inputs.size(); i++) {
@@ -229,9 +246,66 @@ private:
         return output;
     }
 
+    u32 FindAuxLocation(u32 used_locations) const {
+        for (s32 location = MaxAuxBuiltinLocation; location >= 0; location--) {
+            if ((used_locations & (1U << location)) == 0) {
+                return static_cast<u32>(location);
+            }
+        }
+        return MaxAuxBuiltinLocation;
+    }
+
+    void CopyTcsBuiltins(Id invocation_id, Id index) {
+        if (passthrough_point_size) {
+            const Id input_float{TypePointer(spv::StorageClass::Input, float_id)};
+            const Id output_float{TypePointer(spv::StorageClass::Output, float_id)};
+            const Id point_size{OpLoad(float_id, OpAccessChain(input_float, gl_in, index, Int(1)))};
+            OpStore(OpAccessChain(output_float, gl_out, invocation_id, Int(1)), point_size);
+        }
+        CopyTcsBuiltin(passthrough_layer, layer_in, layer_out, invocation_id, index);
+        CopyTcsBuiltin(passthrough_viewport, viewport_in, viewport_out, invocation_id, index);
+    }
+
+    void CopyTcsBuiltin(bool enabled, Id input, Id output, Id invocation_id, Id index) {
+        if (!enabled) {
+            return;
+        }
+        const Id input_uint{TypePointer(spv::StorageClass::Input, uint_id)};
+        const Id output_uint{TypePointer(spv::StorageClass::Output, uint_id)};
+        const Id value{OpLoad(uint_id, OpAccessChain(input_uint, input, index))};
+        OpStore(OpAccessChain(output_uint, output, invocation_id), value);
+    }
+
+    void CopyTesBuiltins(Id index) {
+        if (passthrough_point_size) {
+            const Id input_float{TypePointer(spv::StorageClass::Input, float_id)};
+            const Id output_float{TypePointer(spv::StorageClass::Output, float_id)};
+            const Id point_size{OpLoad(float_id, OpAccessChain(input_float, gl_in, index, Int(1)))};
+            OpStore(OpAccessChain(output_float, gl_per_vertex, Int(1)), point_size);
+        }
+        CopyTesBuiltin(passthrough_layer, layer_in, layer_out, index);
+        CopyTesBuiltin(passthrough_viewport, viewport_in, viewport_out, index);
+    }
+
+    void CopyTesBuiltin(bool enabled, Id input, Id output, Id index) {
+        if (!enabled) {
+            return;
+        }
+        const Id input_uint{TypePointer(spv::StorageClass::Input, uint_id)};
+        const Id output_uint{TypePointer(spv::StorageClass::Output, uint_id)};
+        const Id value{OpLoad(uint_id, OpAccessChain(input_uint, input, index))};
+        OpStore(output, value);
+    }
+
     void DefineEntry(spv::ExecutionModel model) {
         AddCapability(spv::Capability::Shader);
         AddCapability(spv::Capability::Tessellation);
+        if (passthrough_layer) {
+            AddCapability(spv::Capability::ShaderLayer);
+        }
+        if (passthrough_viewport) {
+            AddCapability(spv::Capability::ShaderViewportIndex);
+        }
         const Id void_function{TypeFunction(void_id)};
         main = OpFunction(void_id, spv::FunctionControlMask::MaskNone, void_function);
         if (model == spv::ExecutionModel::TessellationControl) {
@@ -261,8 +335,11 @@ private:
             gl_tess_level_outer = AddOutput(arr4_id);
             Decorate(gl_tess_level_outer, spv::Decoration::BuiltIn, spv::BuiltIn::TessLevelOuter);
             Decorate(gl_tess_level_outer, spv::Decoration::Patch);
+
+            DefinePerVertexAuxOutputs(model, TypeArray(uint_id, Constant(uint_id, 4U)));
         } else {
             gl_per_vertex = AddOutput(gl_per_vertex_type);
+            DefinePerVertexAuxOutputs(model, uint_id);
         }
         outputs.reserve(fs_info.num_inputs);
         for (int i = 0; i < fs_info.num_inputs; i++) {
@@ -288,6 +365,7 @@ private:
         }
         const Id gl_per_vertex_array{TypeArray(gl_per_vertex_type, Constant(uint_id, 32U))};
         gl_in = AddInput(gl_per_vertex_array);
+        DefinePerVertexAuxInputs(TypeArray(uint_id, Constant(uint_id, 32U)));
         const Id float_arr{TypeArray(vec4_id, Int(32))};
         inputs.reserve(fs_info.num_inputs);
         input_present.reserve(fs_info.num_inputs);
@@ -309,6 +387,36 @@ private:
 
     bool VsOutputsParam(u32 param_index) const {
         return param_index < IR::NumParams && ((vs_output_param_mask & (1U << param_index)) != 0);
+    }
+
+    void DefinePerVertexAuxInputs(Id type) {
+        if (passthrough_layer) {
+            layer_in = AddInput(type);
+            Decorate(layer_in, spv::Decoration::Location, layer_location);
+        }
+        if (passthrough_viewport) {
+            viewport_in = AddInput(type);
+            Decorate(viewport_in, spv::Decoration::Location, viewport_location);
+        }
+    }
+
+    void DefinePerVertexAuxOutputs(spv::ExecutionModel model, Id type) {
+        if (passthrough_layer) {
+            layer_out = AddOutput(type);
+            if (model == spv::ExecutionModel::TessellationEvaluation) {
+                Decorate(layer_out, spv::Decoration::BuiltIn, spv::BuiltIn::Layer);
+            } else {
+                Decorate(layer_out, spv::Decoration::Location, layer_location);
+            }
+        }
+        if (passthrough_viewport) {
+            viewport_out = AddOutput(type);
+            if (model == spv::ExecutionModel::TessellationEvaluation) {
+                Decorate(viewport_out, spv::Decoration::BuiltIn, spv::BuiltIn::ViewportIndex);
+            } else {
+                Decorate(viewport_out, spv::Decoration::Location, viewport_location);
+            }
+        }
     }
 
 private:
@@ -336,6 +444,10 @@ private:
     };
     Id gl_tess_level_inner;
     Id gl_tess_level_outer;
+    Id layer_in;
+    Id layer_out;
+    Id viewport_in;
+    Id viewport_out;
     union {
         Id gl_tess_coord;
         Id gl_invocation_id;
@@ -345,11 +457,18 @@ private:
     std::vector<bool> input_present;
     std::vector<Id> interfaces;
     u32 vs_output_param_mask;
+    u32 layer_location;
+    u32 viewport_location;
+    bool passthrough_point_size;
+    bool passthrough_layer;
+    bool passthrough_viewport;
 };
 
 std::vector<u32> EmitAuxilaryTessShader(AuxShaderType type, const FragmentRuntimeInfo& fs_info,
-                                        u32 vs_output_param_mask) {
-    QuadRectListEmitter ctx{fs_info, vs_output_param_mask};
+                                        u32 vs_output_param_mask, bool passthrough_point_size,
+                                        bool passthrough_layer, bool passthrough_viewport) {
+    QuadRectListEmitter ctx{fs_info, vs_output_param_mask, passthrough_point_size,
+                            passthrough_layer, passthrough_viewport};
     switch (type) {
     case AuxShaderType::RectListTCS:
         ctx.EmitRectListTCS();

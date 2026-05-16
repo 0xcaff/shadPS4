@@ -20,6 +20,9 @@ enum class AuxShaderType : u32 {
 
 [[nodiscard]] std::vector<u32> EmitAuxilaryTessShader(AuxShaderType type,
                                                       const FragmentRuntimeInfo& fs_info,
-                                                      u32 vs_output_param_mask = ~0U);
+                                                      u32 vs_output_param_mask = ~0U,
+                                                      bool passthrough_point_size = false,
+                                                      bool passthrough_layer = false,
+                                                      bool passthrough_viewport = false);
 
 } // namespace Shader::Backend::SPIRV

@@ -17,6 +17,28 @@
 namespace Shader::Backend::SPIRV {
 namespace {
 
+constexpr u32 MaxAuxBuiltinLocation = IR::NumParams - 2;
+
+u32 ParamStoreMask(const Info& info) {
+    u32 mask = 0;
+    for (u32 i = 0; i < IR::NumParams; i++) {
+        const IR::Attribute param{IR::Attribute::Param0 + i};
+        if (info.stores.GetAny(param)) {
+            mask |= 1U << i;
+        }
+    }
+    return mask;
+}
+
+u32 FindAuxLocation(u32 used_locations) {
+    for (s32 location = MaxAuxBuiltinLocation; location >= 0; location--) {
+        if ((used_locations & (1U << location)) == 0) {
+            return static_cast<u32>(location);
+        }
+    }
+    return MaxAuxBuiltinLocation;
+}
+
 std::string_view StageName(Stage stage) {
     switch (stage) {
     case Stage::Vertex:
@@ -581,12 +603,25 @@ void EmitContext::DefineVertexBlock() {
         output_point_size =
             DefineVariable(F32[1], spv::BuiltIn::PointSize, spv::StorageClass::Output);
     }
+    const bool emit_aux_tess_generic_builtin = l_stage == LogicalStage::Vertex &&
+                                               stage == Stage::Vertex &&
+                                               runtime_info.vs_info.tess_emulated_primitive;
+    u32 aux_locations = ParamStoreMask(info);
+    const auto next_aux_location = [&] {
+        const u32 location = FindAuxLocation(aux_locations);
+        aux_locations |= 1U << location;
+        return location;
+    };
     if (info.stores.GetAny(IR::Attribute::RenderTargetIndex)) {
-        output_layer = DefineVariable(U32[1], spv::BuiltIn::Layer, spv::StorageClass::Output);
+        output_layer = emit_aux_tess_generic_builtin
+                           ? DefineOutput(U32[1], next_aux_location())
+                           : DefineVariable(U32[1], spv::BuiltIn::Layer, spv::StorageClass::Output);
     }
     if (info.stores.GetAny(IR::Attribute::ViewportIndex)) {
         output_viewport_index =
-            DefineVariable(U32[1], spv::BuiltIn::ViewportIndex, spv::StorageClass::Output);
+            emit_aux_tess_generic_builtin
+                ? DefineOutput(U32[1], next_aux_location())
+                : DefineVariable(U32[1], spv::BuiltIn::ViewportIndex, spv::StorageClass::Output);
     }
 }
 

@@ -216,12 +216,20 @@ GraphicsPipeline::GraphicsPipeline(
         });
     } else if (is_rect_list || is_quad_list) {
         const auto type = is_quad_list ? AuxShaderType::QuadListTCS : AuxShaderType::RectListTCS;
+        const auto* vs_info = infos[u32(Shader::LogicalStage::Vertex)];
+        const bool passthrough_point_size =
+            vs_info && vs_info->stores.GetAny(Shader::IR::Attribute::PointSize);
+        const bool passthrough_layer =
+            vs_info && vs_info->stores.GetAny(Shader::IR::Attribute::RenderTargetIndex);
+        const bool passthrough_viewport =
+            vs_info && vs_info->stores.GetAny(Shader::IR::Attribute::ViewportIndex);
         if (!preloading) {
             const auto& fs_info = runtime_infos[u32(Shader::LogicalStage::Fragment)].fs_info;
             const auto vs_output_param_mask =
                 GetParamStoreMask(infos[u32(Shader::LogicalStage::Vertex)]);
-            sdata.tcs =
-                Shader::Backend::SPIRV::EmitAuxilaryTessShader(type, fs_info, vs_output_param_mask);
+            sdata.tcs = Shader::Backend::SPIRV::EmitAuxilaryTessShader(
+                type, fs_info, vs_output_param_mask, passthrough_point_size, passthrough_layer,
+                passthrough_viewport);
         }
         shader_stages.emplace_back(vk::PipelineShaderStageCreateInfo{
             .stage = vk::ShaderStageFlagBits::eTessellationControl,
@@ -237,10 +245,18 @@ GraphicsPipeline::GraphicsPipeline(
             .pName = "main",
         });
     } else if (is_rect_list || is_quad_list) {
+        const auto* vs_info = infos[u32(Shader::LogicalStage::Vertex)];
+        const bool passthrough_point_size =
+            vs_info && vs_info->stores.GetAny(Shader::IR::Attribute::PointSize);
+        const bool passthrough_layer =
+            vs_info && vs_info->stores.GetAny(Shader::IR::Attribute::RenderTargetIndex);
+        const bool passthrough_viewport =
+            vs_info && vs_info->stores.GetAny(Shader::IR::Attribute::ViewportIndex);
         if (!preloading) {
             const auto& fs_info = runtime_infos[u32(Shader::LogicalStage::Fragment)].fs_info;
             sdata.tes = Shader::Backend::SPIRV::EmitAuxilaryTessShader(
-                AuxShaderType::PassthroughTES, fs_info);
+                AuxShaderType::PassthroughTES, fs_info, ~0U, passthrough_point_size,
+                passthrough_layer, passthrough_viewport);
         }
         shader_stages.emplace_back(vk::PipelineShaderStageCreateInfo{
             .stage = vk::ShaderStageFlagBits::eTessellationEvaluation,
