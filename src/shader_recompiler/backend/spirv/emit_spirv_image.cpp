@@ -147,6 +147,16 @@ Id EmitImageGather(EmitContext& ctx, IR::Inst* inst, u32 handle, Id coords,
     const Id sampler = ctx.OpLoad(ctx.sampler_type, ctx.samplers[handle >> 16]);
     const Id sampled_image = ctx.OpSampledImage(texture.sampled_type, image, sampler);
     const u32 comp = inst->Flags<IR::TextureInstInfo>().gather_comp.Value();
+    if (texture.view_type == AmdGpu::ImageType::Color3D ||
+        texture.view_type == AmdGpu::ImageType::Color1D ||
+        texture.view_type == AmdGpu::ImageType::Color1DArray) {
+        LOG_WARNING(Render, "Fallback for ImageGather with unsupported image dimension");
+        const Id sample = ctx.OpImageSampleExplicitLod(
+            result_type, sampled_image, coords, spv::ImageOperandsMask::Lod, ctx.ConstF32(0.f));
+        const Id sample_typed = texture.is_integer ? ctx.OpBitcast(ctx.F32[4], sample) : sample;
+        const Id component = ctx.OpCompositeExtract(ctx.F32[1], sample_typed, comp);
+        return ctx.OpCompositeConstruct(ctx.F32[4], component, component, component, component);
+    }
     ImageOperands operands;
     operands.AddOffset(ctx, offset, true);
     const Id texels = ctx.OpImageGather(result_type, sampled_image, coords, ctx.ConstU32(comp),
@@ -161,6 +171,17 @@ Id EmitImageGatherDref(EmitContext& ctx, IR::Inst* inst, u32 handle, Id coords,
     const Id result_type = texture.data_types->Get(4);
     const Id sampler = ctx.OpLoad(ctx.sampler_type, ctx.samplers[handle >> 16]);
     const Id sampled_image = ctx.OpSampledImage(texture.sampled_type, image, sampler);
+    if (texture.view_type == AmdGpu::ImageType::Color3D ||
+        texture.view_type == AmdGpu::ImageType::Color1D ||
+        texture.view_type == AmdGpu::ImageType::Color1DArray) {
+        LOG_WARNING(Render, "Fallback for ImageGatherDref with unsupported image dimension");
+        const Id sample = ctx.OpImageSampleDrefExplicitLod(
+            texture.data_types->Get(1), sampled_image, coords, dref, spv::ImageOperandsMask::Lod,
+            ctx.ConstF32(0.f));
+        const Id sample_typed = texture.is_integer ? ctx.OpBitcast(ctx.F32[1], sample) : sample;
+        return ctx.OpCompositeConstruct(ctx.F32[4], sample_typed, sample_typed, sample_typed,
+                                        sample_typed);
+    }
     ImageOperands operands;
     operands.AddOffset(ctx, offset, true);
     const Id texels = ctx.OpImageDrefGather(result_type, sampled_image, coords, dref, operands.mask,

@@ -47,6 +47,33 @@ bool IsViewTypeCompatible(AmdGpu::ImageType view_type, AmdGpu::ImageType image_t
     }
 }
 
+vk::Format StorageViewFormat(const Vulkan::Instance& instance, vk::Format format) {
+    constexpr vk::FormatFeatureFlags2 storage_features =
+        vk::FormatFeatureFlagBits2::eStorageImage |
+        vk::FormatFeatureFlagBits2::eStorageReadWithoutFormat |
+        vk::FormatFeatureFlagBits2::eStorageWriteWithoutFormat;
+    if (instance.IsFormatSupported(format, storage_features)) {
+        return format;
+    }
+
+    switch (format) {
+    case vk::Format::eR5G6B5UnormPack16:
+    case vk::Format::eA1R5G5B5UnormPack16:
+    case vk::Format::eR5G5B5A1UnormPack16:
+    case vk::Format::eB4G4R4A4UnormPack16:
+        if (instance.IsFormatSupported(vk::Format::eR16Unorm, storage_features)) {
+            LOG_WARNING(Render_Vulkan,
+                        "Using R16Unorm storage view fallback for unsupported storage format {}",
+                        vk::to_string(format));
+            return vk::Format::eR16Unorm;
+        }
+        break;
+    default:
+        break;
+    }
+    return format;
+}
+
 ImageViewInfo::ImageViewInfo(const AmdGpu::Image& image, const Shader::ImageResource& desc) noexcept
     : is_storage{desc.is_written} {
     const auto dfmt = image.GetDataFmt();
@@ -92,7 +119,10 @@ ImageView::ImageView(const Vulkan::Instance& instance, const ImageViewInfo& info
                      const Image& image)
     : info{info_} {
     vk::ImageViewUsageCreateInfo usage_ci{.usage = image.usage_flags};
-    if (!info.is_storage) {
+    const bool has_storage_usage = bool(image.usage_flags & vk::ImageUsageFlagBits::eStorage);
+    if (info.is_storage && has_storage_usage) {
+        usage_ci.usage = vk::ImageUsageFlagBits::eStorage;
+    } else if (!info.is_storage) {
         usage_ci.usage &= ~vk::ImageUsageFlagBits::eStorage;
     }
     // When sampling D32/D16 texture from shader, the T# specifies R32/R16 format so adjust it.
@@ -108,12 +138,15 @@ ImageView::ImageView(const Vulkan::Instance& instance, const ImageViewInfo& info
         format = image.info.pixel_format;
         aspect = vk::ImageAspectFlagBits::eStencil;
     }
+    const vk::Format view_format = info.is_storage && has_storage_usage
+                                       ? StorageViewFormat(instance, format)
+                                       : instance.GetSupportedFormat(format, image.format_features);
 
     const vk::ImageViewCreateInfo image_view_ci = {
         .pNext = &usage_ci,
         .image = image.GetImage(),
         .viewType = ConvertImageViewType(info.type),
-        .format = instance.GetSupportedFormat(format, image.format_features),
+        .format = view_format,
         .components = info.mapping,
         .subresourceRange{
             .aspectMask = aspect,

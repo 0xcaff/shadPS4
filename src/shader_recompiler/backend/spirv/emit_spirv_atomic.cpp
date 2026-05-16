@@ -452,4 +452,8 @@ Id EmitDataConsume(EmitContext& ctx, u32 gds_addr, u32 binding) {
     UNREACHABLE_MSG("SPIR-V Instruction");
 }
 
+Id EmitDataOrderedCount(EmitContext& ctx, u32 gds_addr, Id value, u32 op) {
+    UNREACHABLE_MSG("SPIR-V Instruction");
+}
+
 } // namespace Shader::Backend::SPIRV

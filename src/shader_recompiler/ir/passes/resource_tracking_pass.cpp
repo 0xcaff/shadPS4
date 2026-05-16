@@ -91,6 +91,7 @@ bool IsDataRingInstruction(const IR::Inst& inst) {
     switch (inst.GetOpcode()) {
     case IR::Opcode::DataAppend:
     case IR::Opcode::DataConsume:
+    case IR::Opcode::DataOrderedCount:
         return true;
     case IR::Opcode::LoadSharedU16:
     case IR::Opcode::LoadSharedU32:
@@ -675,8 +676,9 @@ void PatchGlobalDataShareAccess(IR::Block& block, IR::Inst& inst, Info& info,
 
     IR::IREmitter ir{block, IR::Block::InstructionList::s_iterator_to(inst)};
 
-    // For data append/consume operations attempt to deduce the GDS address.
-    if (inst.GetOpcode() == IR::Opcode::DataAppend || inst.GetOpcode() == IR::Opcode::DataConsume) {
+    // For data append/consume/order-count operations attempt to deduce the GDS address.
+    if (inst.GetOpcode() == IR::Opcode::DataAppend || inst.GetOpcode() == IR::Opcode::DataConsume ||
+        inst.GetOpcode() == IR::Opcode::DataOrderedCount) {
         const auto pred = [](const IR::Inst* inst) -> std::optional<const IR::Inst*> {
             if (inst->GetOpcode() == IR::Opcode::GetUserData) {
                 return inst;
@@ -685,30 +687,63 @@ void PatchGlobalDataShareAccess(IR::Block& block, IR::Inst& inst, Info& info,
         };
 
         u32 gds_addr = 0;
+        u32 gds_index = 0;
+        const bool is_ordered_count = inst.GetOpcode() == IR::Opcode::DataOrderedCount;
         const IR::Value& gds_offset = inst.Arg(0);
         if (gds_offset.IsImmediate()) {
             // Nothing to do, offset is known.
-            gds_addr = gds_offset.U32() & 0xFFFF;
+            if (is_ordered_count) {
+                gds_index = gds_offset.U32() & 0xFFFF;
+            } else {
+                gds_addr = gds_offset.U32() & 0xFFFF;
+            }
         } else {
             const auto result = IR::BreadthFirstSearch(&inst, pred);
-            ASSERT_MSG(result, "Unable to track M0 source");
-
-            // M0 must be set by some user data register.
             const IR::Inst* prod = gds_offset.InstRecursive();
-            const u32 ud_reg = u32(result.value()->Arg(0).ScalarReg());
-            u32 m0_val = info.user_data[ud_reg] >> 16;
-            if (prod->GetOpcode() == IR::Opcode::IAdd32) {
-                m0_val += prod->Arg(1).U32();
+            if (!result) {
+                ASSERT_MSG(is_ordered_count, "Unable to track M0 source");
+                if (prod->GetOpcode() == IR::Opcode::IAdd32) {
+                    gds_index = (prod->Arg(1).U32() >> 2) & 0xFFFF;
+                }
+            } else {
+                // M0 must be set by some user data register.
+                const u32 ud_reg = u32(result.value()->Arg(0).ScalarReg());
+                u32 m0_val = info.user_data[ud_reg] >> 16;
+                if (is_ordered_count) {
+                    // Ordered count uses M0[31:16] as a dword base and offset0[5:2] as an index.
+                    if (prod->GetOpcode() == IR::Opcode::IAdd32) {
+                        m0_val += prod->Arg(1).U32() >> 2;
+                    }
+                    gds_index = m0_val & 0xFFFF;
+                } else {
+                    if (prod->GetOpcode() == IR::Opcode::IAdd32) {
+                        m0_val += prod->Arg(1).U32();
+                    }
+                    gds_addr = m0_val & 0xFFFF;
+                }
             }
-            gds_addr = m0_val & 0xFFFF;
         }
 
-        // Patch instruction to GDS buffer atomic increment/decrement.
+        // Patch instruction to GDS buffer atomics.
         const IR::U32 handle = ir.Imm32(binding);
-        const IR::U32 index = ir.Imm32(gds_addr >> 2);
-        const bool is_append = inst.GetOpcode() == IR::Opcode::DataAppend;
-        const IR::Value prev = is_append ? ir.BufferAtomicInc(handle, index, {})
-                                         : ir.BufferAtomicDec(handle, index, {});
+        const IR::U32 index = ir.Imm32(is_ordered_count ? gds_index : (gds_addr >> 2));
+        const IR::Value prev = [&] -> IR::Value {
+            if (is_ordered_count) {
+                const u32 op = inst.Arg(2).U32();
+                switch (op) {
+                case 1:
+                    return ir.BufferAtomicSwap(handle, index, inst.Arg(1), {});
+                case 3:
+                    return ir.BufferAtomicInc(handle, index, {});
+                case 0:
+                default:
+                    return ir.BufferAtomicIAdd(handle, index, inst.Arg(1), {});
+                }
+            }
+            const bool is_append = inst.GetOpcode() == IR::Opcode::DataAppend;
+            return is_append ? ir.BufferAtomicInc(handle, index, {})
+                             : ir.BufferAtomicDec(handle, index, {});
+        }();
         inst.ReplaceUsesWithAndRemove(prev);
     } else {
         // Convert shared memory opcode to storage buffer atomic to GDS buffer.

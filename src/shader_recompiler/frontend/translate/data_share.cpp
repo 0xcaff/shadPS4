@@ -28,6 +28,10 @@ void Translator::EmitDataShare(const GcnInst& inst) {
         return DS_OP(inst, AtomicOp::Umin, false);
     case Opcode::DS_MAX_U32:
         return DS_OP(inst, AtomicOp::Umax, false);
+    case Opcode::DS_MIN_F32:
+        return DS_OP_F32(inst, AtomicOp::Fmin, false);
+    case Opcode::DS_MAX_F32:
+        return DS_OP_F32(inst, AtomicOp::Fmax, false);
     case Opcode::DS_AND_B32:
         return DS_OP(inst, AtomicOp::And, false);
     case Opcode::DS_OR_B32:
@@ -48,6 +52,10 @@ void Translator::EmitDataShare(const GcnInst& inst) {
         return DS_OP(inst, AtomicOp::Umin, true);
     case Opcode::DS_MAX_RTN_U32:
         return DS_OP(inst, AtomicOp::Umax, true);
+    case Opcode::DS_MIN_RTN_F32:
+        return DS_OP_F32(inst, AtomicOp::Fmin, true);
+    case Opcode::DS_MAX_RTN_F32:
+        return DS_OP_F32(inst, AtomicOp::Fmax, true);
     case Opcode::DS_AND_RTN_B32:
         return DS_OP(inst, AtomicOp::And, true);
     case Opcode::DS_OR_RTN_B32:
@@ -68,6 +76,8 @@ void Translator::EmitDataShare(const GcnInst& inst) {
         return DS_CONSUME(inst);
     case Opcode::DS_APPEND:
         return DS_APPEND(inst);
+    case Opcode::DS_ORDERED_COUNT:
+        return DS_ORDERED_COUNT(inst);
     case Opcode::DS_WRITE_B16:
         return DS_WRITE(16, false, false, false, inst);
     case Opcode::DS_WRITE_B64:
@@ -167,6 +177,31 @@ void Translator::DS_OP(const GcnInst& inst, AtomicOp op, bool rtn) {
         } else {
             SetDst64(inst.dst[0], original_val);
         }
+    }
+}
+
+void Translator::DS_OP_F32(const GcnInst& inst, AtomicOp op, bool rtn) {
+    const bool is_gds = inst.control.ds.gds;
+    const IR::U32 addr{GetSrc(inst.src[0])};
+    const IR::U32 data{ir.BitCast<IR::U32>(GetSrc<IR::F32>(inst.src[1]))};
+    const IR::U32 offset =
+        ir.Imm32((u32(inst.control.ds.offset1) << 8u) + u32(inst.control.ds.offset0));
+    const IR::U32 addr_offset = ir.IAdd(addr, offset);
+
+    // This quick path assumes the values are in the non-negative float range, where integer
+    // ordering matches IEEE-754 bit ordering. Dreams reaches this path while booting.
+    const IR::U32 original_val = [&] {
+        switch (op) {
+        case AtomicOp::Fmin:
+            return IR::U32{ir.SharedAtomicIMin(addr_offset, data, false, is_gds)};
+        case AtomicOp::Fmax:
+            return IR::U32{ir.SharedAtomicIMax(addr_offset, data, false, is_gds)};
+        default:
+            UNREACHABLE();
+        }
+    }();
+    if (rtn) {
+        SetDst(inst.dst[0], original_val);
     }
 }
 
@@ -306,6 +341,18 @@ void Translator::DS_CONSUME(const GcnInst& inst) {
     const IR::U32 gds_offset = ir.IAdd(ir.GetM0(), ir.Imm32(inst_offset));
     const IR::U32 prev = ir.DataConsume(gds_offset);
     SetDst(inst.dst[0], prev);
+}
+
+void Translator::DS_ORDERED_COUNT(const GcnInst& inst) {
+    const IR::U32 value{GetSrc(inst.src[0])};
+    const IR::U32 first_active_lane = ir.BallotFindLsb(ir.Ballot(ir.GetExec()));
+    const IR::U1 is_first_active_lane = ir.IEqual(ir.LaneId(), first_active_lane);
+    const IR::U32 active_lane_value{ir.Select(is_first_active_lane, value, ir.Imm32(0U))};
+
+    const IR::U32 gds_offset = ir.IAdd(ir.GetM0(), ir.Imm32(u32(inst.control.ds.offset0)));
+    const u32 ordered_count_op = (inst.control.ds.offset1 >> 4) & 0x3;
+    const IR::U32 prev = ir.DataOrderedCount(gds_offset, active_lane_value, ordered_count_op);
+    SetDst(inst.dst[0], ir.ReadFirstLane(prev));
 }
 
 } // namespace Shader::Gcn

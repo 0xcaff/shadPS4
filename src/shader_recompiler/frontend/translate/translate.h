@@ -126,6 +126,7 @@ public:
     void S_FLBIT_I32_B32(const GcnInst& inst);
     void S_FLBIT_I32_B64(const GcnInst& inst);
     void S_BITSET_B32(const GcnInst& inst, u32 bit_value);
+    void S_BITSET_B64(const GcnInst& inst, u32 bit_value);
     void S_GETPC_B64(const GcnInst& inst);
     void S_SAVEEXEC_B64(NegateMode negate, bool is_or, const GcnInst& inst);
     void S_ABS_I32(const GcnInst& inst);
@@ -281,11 +282,13 @@ public:
     // DS
     template <typename T = IR::U32>
     void DS_OP(const GcnInst& inst, AtomicOp op, bool rtn);
+    void DS_OP_F32(const GcnInst& inst, AtomicOp op, bool rtn);
     void DS_WRITE(int bit_size, bool is_signed, bool is_pair, bool stride64, const GcnInst& inst);
     void DS_READ(int bit_size, bool is_signed, bool is_pair, bool stride64, const GcnInst& inst);
     void DS_SWIZZLE_B32(const GcnInst& inst);
     void DS_APPEND(const GcnInst& inst);
     void DS_CONSUME(const GcnInst& inst);
+    void DS_ORDERED_COUNT(const GcnInst& inst);
 
     // Buffer Memory
     // MUBUF / MTBUF

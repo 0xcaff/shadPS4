@@ -640,6 +640,10 @@ U32 IREmitter::DataConsume(const U32& counter) {
     return Inst<U32>(Opcode::DataConsume, counter, Imm32(0));
 }
 
+U32 IREmitter::DataOrderedCount(const U32& counter, const U32& value, u32 op) {
+    return Inst<U32>(Opcode::DataOrderedCount, counter, value, Imm32(op));
+}
+
 U32 IREmitter::LaneId() {
     return Inst<U32>(Opcode::LaneId);
 }

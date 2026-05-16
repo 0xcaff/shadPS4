@@ -472,6 +472,7 @@ Id EmitBallotFindLsb(EmitContext& ctx, Id mask);
 Id EmitGroupAny(EmitContext& ctx, Id bit);
 Id EmitDataAppend(EmitContext& ctx, u32 gds_addr, u32 binding);
 Id EmitDataConsume(EmitContext& ctx, u32 gds_addr, u32 binding);
+Id EmitDataOrderedCount(EmitContext& ctx, u32 gds_addr, Id value, u32 op);
 
 void EmitEmitVertex(EmitContext& ctx);
 void EmitEmitPrimitive(EmitContext& ctx);
