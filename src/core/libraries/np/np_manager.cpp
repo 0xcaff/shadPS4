@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstring>
 #include <map>
 #include <mutex>
 #include <variant>
@@ -26,6 +27,11 @@ static std::mutex g_np_callbacks_mutex;
 static std::map<s32, bool> g_bandwidth_test_requests;
 static std::mutex g_bandwidth_test_mutex;
 static s32 g_next_bandwidth_test_request_id = 1;
+
+static void SetDefaultLanguage(OrbisNpLanguageCode* language) {
+    std::memset(language, 0, sizeof(OrbisNpLanguageCode));
+    std::memcpy(language->code, "en-US", sizeof("en-US"));
+}
 
 // Internal types for storing request-related information
 enum class NpRequestState {
@@ -293,7 +299,7 @@ s32 PS4_SYSV_ABI sceNpGetAccountLanguage(s32 req_id, OrbisNpOnlineId* online_id,
     LOG_ERROR(Lib_NpManager, "(STUBBED) called, req_id = {:#x}, is_async = {}", req_id,
               request.async);
 
-    std::memset(language, 0, sizeof(OrbisNpLanguageCode));
+    SetDefaultLanguage(language);
 
     request.result = ORBIS_OK;
     return ORBIS_OK;
@@ -336,7 +342,7 @@ s32 PS4_SYSV_ABI sceNpGetAccountLanguageA(s32 req_id,
     LOG_ERROR(Lib_NpManager, "(STUBBED) called, req_id = {:#x}, user_id = {}, is_async = {}",
               req_id, user_id, request.async);
 
-    std::memset(language, 0, sizeof(OrbisNpLanguageCode));
+    SetDefaultLanguage(language);
 
     request.result = ORBIS_OK;
     return ORBIS_OK;
@@ -379,7 +385,7 @@ s32 PS4_SYSV_ABI sceNpGetParentalControlInfo(s32 req_id, OrbisNpOnlineId* online
               request.async);
 
     // TODO: Add to config?
-    *age = 13;
+    *age = 18;
     std::memset(info, 0, sizeof(OrbisNpParentalControlInfo));
 
     request.result = ORBIS_OK;
@@ -424,7 +430,7 @@ sceNpGetParentalControlInfoA(s32 req_id, Libraries::UserService::OrbisUserServic
               req_id, user_id, request.async);
 
     // TODO: Add to config?
-    *age = 13;
+    *age = 18;
     std::memset(info, 0, sizeof(OrbisNpParentalControlInfo));
 
     request.result = ORBIS_OK;

@@ -620,35 +620,27 @@ void Translator::V_BCNT_U32_B32(const GcnInst& inst) {
 }
 
 void Translator::V_MBCNT_U32_B32(bool is_low, const GcnInst& inst) {
-    if (!is_low) {
-        // v_mbcnt_hi_u32_b32 vX, -1, 0
-        if (inst.src[0].field == OperandField::SignedConstIntNeg && inst.src[0].code == 193 &&
-            inst.src[1].field == OperandField::ConstZero) {
-            return;
+    const auto get_src0 = [&] -> IR::U32 {
+        switch (inst.src[0].field) {
+        case OperandField::ExecLo:
+            return IR::U32{ir.CompositeExtract(ir.Ballot(ir.GetExec()), 0)};
+        case OperandField::ExecHi:
+            return IR::U32{ir.CompositeExtract(ir.Ballot(ir.GetExec()), 1)};
+        default:
+            return GetSrc(inst.src[0]);
         }
-        // v_mbcnt_hi_u32_b32 vX, exec_hi, 0/vZ
-        if ((inst.src[0].field == OperandField::ExecHi ||
-             inst.src[0].field == OperandField::VccHi ||
-             inst.src[0].field == OperandField::ScalarGPR) &&
-            (inst.src[1].field == OperandField::ConstZero ||
-             inst.src[1].field == OperandField::VectorGPR)) {
-            return SetDst(inst.dst[0], GetSrc(inst.src[1]));
-        }
-        UNREACHABLE();
-    } else {
-        // v_mbcnt_lo_u32_b32 vY, -1, vX
-        // used combined with above to fetch lane id in non-compute stages
-        if (inst.src[0].field == OperandField::SignedConstIntNeg && inst.src[0].code == 193) {
-            return SetDst(inst.dst[0], ir.LaneId());
-        }
-        // v_mbcnt_lo_u32_b32 vY, exec_lo, vX
-        // used combined with above for append buffer indexing.
-        if (inst.src[0].field == OperandField::ExecLo || inst.src[0].field == OperandField::VccLo ||
-            inst.src[0].field == OperandField::ScalarGPR) {
-            return SetDst(inst.dst[0], GetSrc(inst.src[1]));
-        }
-        UNREACHABLE();
-    }
+    };
+
+    const IR::U32 lane = ir.BitwiseAnd(ir.LaneId(), ir.Imm32(0x3f));
+    const IR::U32 lane_shift = ir.BitwiseAnd(lane, ir.Imm32(0x1f));
+    const IR::U32 lane_mask =
+        ir.ISub(ir.ShiftLeftLogical(ir.Imm32(1), lane_shift), ir.Imm32(1));
+    const IR::U1 is_hi_lane = ir.IGreaterThanEqual(lane, ir.Imm32(32), false);
+    const IR::U32 mbcnt_mask{
+        ir.Select(is_hi_lane, is_low ? ir.Imm32(~0U) : lane_mask,
+                  is_low ? lane_mask : ir.Imm32(0U))};
+    const IR::U32 masked_src = ir.BitwiseAnd(get_src0(), mbcnt_mask);
+    SetDst(inst.dst[0], ir.IAdd(ir.BitCount(masked_src), GetSrc(inst.src[1])));
 }
 
 void Translator::V_ADD_I32(const GcnInst& inst) {
