@@ -177,8 +177,17 @@ void CollectShaderInfoPass(IR::Program& program, const Profile& profile) {
     }
 
     if (!EmulatorSettings.IsDirectMemoryAccessEnabled()) {
-        info.uses_dma = false;
-        info.readconst_types = Info::ReadConstType::None;
+        const bool has_dynamic_readconst =
+            True(info.readconst_types & Info::ReadConstType::Dynamic);
+        if (has_dynamic_readconst) {
+            // Dynamic ReadConst offsets cannot be flattened into a fixed flatbuffer slot.
+            // Keep DMA only for those loads while immediate ReadConst uses the flatbuffer path.
+            info.readconst_types = Info::ReadConstType::Dynamic;
+            info.uses_dma = true;
+        } else {
+            info.uses_dma = false;
+            info.readconst_types = Info::ReadConstType::None;
+        }
     }
 
     if (info.uses_dma) {
