@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <span>
 #include <type_traits>
 #include <utility>
@@ -141,9 +142,64 @@ Id TypeId(const EmitContext& ctx, IR::Type type) {
     }
 }
 
+bool IsReachable(const IR::Program& program, const IR::Block* block) {
+    return std::ranges::find(program.post_order_blocks, block) != program.post_order_blocks.end();
+}
+
+bool IsReachableValue(const IR::Program& program, const IR::Value& value) {
+    if (const IR::Inst* const inst = value.TryInstRecursive()) {
+        return IsReachable(program, inst->GetParent());
+    }
+    return true;
+}
+
+bool IsReachableNode(const IR::Program& program, const IR::AbstractSyntaxNode& node) {
+    switch (node.type) {
+    case IR::AbstractSyntaxNode::Type::Block:
+        return IsReachable(program, node.data.block);
+    case IR::AbstractSyntaxNode::Type::If:
+        return IsReachableValue(program, node.data.if_node.cond) &&
+               IsReachable(program, node.data.if_node.body) &&
+               IsReachable(program, node.data.if_node.merge);
+    case IR::AbstractSyntaxNode::Type::EndIf:
+        return IsReachable(program, node.data.end_if.merge);
+    case IR::AbstractSyntaxNode::Type::Loop:
+        return IsReachable(program, node.data.loop.body) &&
+               IsReachable(program, node.data.loop.continue_block) &&
+               IsReachable(program, node.data.loop.merge);
+    case IR::AbstractSyntaxNode::Type::Repeat:
+        return IsReachableValue(program, node.data.repeat.cond) &&
+               IsReachable(program, node.data.repeat.loop_header) &&
+               IsReachable(program, node.data.repeat.merge);
+    case IR::AbstractSyntaxNode::Type::Break:
+        return IsReachableValue(program, node.data.break_node.cond) &&
+               IsReachable(program, node.data.break_node.merge) &&
+               IsReachable(program, node.data.break_node.skip);
+    case IR::AbstractSyntaxNode::Type::Return:
+    case IR::AbstractSyntaxNode::Type::Unreachable:
+        return true;
+    }
+    UNREACHABLE();
+}
+
+IR::BlockList EmitBlocks(const IR::Program& program) {
+    IR::BlockList blocks;
+    blocks.reserve(program.post_order_blocks.size());
+    for (const IR::AbstractSyntaxNode& node : program.syntax_list) {
+        if (node.type == IR::AbstractSyntaxNode::Type::Block &&
+            IsReachable(program, node.data.block)) {
+            blocks.push_back(node.data.block);
+        }
+    }
+    return blocks;
+}
+
 void Traverse(EmitContext& ctx, const IR::Program& program) {
     IR::Block* current_block{};
     for (const IR::AbstractSyntaxNode& node : program.syntax_list) {
+        if (!IsReachableNode(program, node)) {
+            continue;
+        }
         switch (node.type) {
         case IR::AbstractSyntaxNode::Type::Block: {
             const Id label{node.data.block->Definition<Id>()};
@@ -193,9 +249,15 @@ void Traverse(EmitContext& ctx, const IR::Program& program) {
             break;
         }
         case IR::AbstractSyntaxNode::Type::Return:
+            if (!current_block) {
+                break;
+            }
             ctx.OpReturn();
             break;
         case IR::AbstractSyntaxNode::Type::Unreachable:
+            if (!current_block) {
+                break;
+            }
             ctx.OpUnreachable();
             break;
         }
@@ -435,22 +497,23 @@ void SetupFloatMode(EmitContext& ctx, const Profile& profile, const RuntimeInfo&
     }
 }
 
-void PatchPhiNodes(const IR::Program& program, EmitContext& ctx) {
-    auto inst{program.blocks.front()->begin()};
+void PatchPhiNodes(const IR::BlockList& blocks, EmitContext& ctx) {
+    auto inst{blocks.front()->begin()};
     size_t block_index{0};
     ctx.PatchDeferredPhi([&](u32 phi_arg, Id first_parent) {
         if (phi_arg == 0) {
             ++inst;
-            if (inst == program.blocks[block_index]->end() ||
-                inst->GetOpcode() != IR::Opcode::Phi) {
+            if (inst == blocks[block_index]->end() || inst->GetOpcode() != IR::Opcode::Phi) {
                 do {
                     ++block_index;
-                    inst = program.blocks[block_index]->begin();
+                    inst = blocks[block_index]->begin();
                 } while (inst->GetOpcode() != IR::Opcode::Phi);
             }
         }
         const Id arg = ctx.Def(inst->Arg(phi_arg));
-        const Id parent = ctx.first_to_last_label_map[first_parent.value];
+        const auto parent_it = ctx.first_to_last_label_map.find(first_parent.value);
+        ASSERT_MSG(parent_it != ctx.first_to_last_label_map.end(), "Missing phi parent label");
+        const Id parent = parent_it->second;
         return std::make_pair(arg, parent);
     });
 }
@@ -463,7 +526,7 @@ std::vector<u32> EmitSPIRV(const Profile& profile, const RuntimeInfo& runtime_in
     DefineEntryPoint(program.info, ctx, main);
     SetupCapabilities(program.info, profile, runtime_info, ctx);
     SetupFloatMode(ctx, profile, runtime_info, main);
-    PatchPhiNodes(program, ctx);
+    PatchPhiNodes(EmitBlocks(program), ctx);
     binding.user_data += program.info.ud_mask.NumRegs();
     return ctx.Assemble();
 }
