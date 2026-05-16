@@ -27,95 +27,113 @@ namespace Libraries::Net {
         return -1;
 #endif
 
+static int ConvertHostErrno(int error) {
+    switch (error) {
+    case 0:
+        return 0;
+#ifndef _WIN32 // These errorcodes don't exist in WinSock
+        ERROR_CASE(EPERM)
+        ERROR_CASE(ENOENT)
+        // ERROR_CASE(ESRCH)
+        // ERROR_CASE(EIO)
+        // ERROR_CASE(ENXIO)
+        // ERROR_CASE(E2BIG)
+        // ERROR_CASE(ENOEXEC)
+        // ERROR_CASE(EDEADLK)
+        ERROR_CASE(ENOMEM)
+        // ERROR_CASE(ECHILD)
+        // ERROR_CASE(EBUSY)
+        ERROR_CASE(EEXIST)
+        // ERROR_CASE(EXDEV)
+        ERROR_CASE(ENODEV)
+        // ERROR_CASE(ENOTDIR)
+        // ERROR_CASE(EISDIR)
+        ERROR_CASE(ENFILE)
+        // ERROR_CASE(ENOTTY)
+        // ERROR_CASE(ETXTBSY)
+        // ERROR_CASE(EFBIG)
+        ERROR_CASE(ENOSPC)
+        // ERROR_CASE(ESPIPE)
+        // ERROR_CASE(EROFS)
+        // ERROR_CASE(EMLINK)
+        ERROR_CASE(EPIPE)
+        // ERROR_CASE(EDOM)
+        // ERROR_CASE(ERANGE)
+        // ERROR_CASE(ENOLCK)
+        // ERROR_CASE(ENOSYS)
+        // ERROR_CASE(EIDRM)
+        // ERROR_CASE(EOVERFLOW)
+        // ERROR_CASE(EILSEQ)
+        // ERROR_CASE(ENOTSUP)
+        ERROR_CASE(ECANCELED)
+        // ERROR_CASE(EBADMSG)
+        ERROR_CASE(ENODATA)
+        // ERROR_CASE(ENOSR)
+        // ERROR_CASE(ENOSTR)
+        // ERROR_CASE(ETIME)
+#endif
+        ERROR_CASE(EINTR)
+        ERROR_CASE(EBADF)
+        ERROR_CASE(EACCES)
+        ERROR_CASE(EFAULT)
+        ERROR_CASE(EINVAL)
+        ERROR_CASE(EMFILE)
+        ERROR_CASE(EWOULDBLOCK)
+        ERROR_CASE(EINPROGRESS)
+        ERROR_CASE(EALREADY)
+        ERROR_CASE(ENOTSOCK)
+        ERROR_CASE(EDESTADDRREQ)
+        ERROR_CASE(EMSGSIZE)
+        ERROR_CASE(EPROTOTYPE)
+        ERROR_CASE(ENOPROTOOPT)
+        ERROR_CASE(EPROTONOSUPPORT)
+#if defined(__APPLE__) || defined(_WIN32)
+        ERROR_CASE(EOPNOTSUPP)
+#endif
+        ERROR_CASE(EAFNOSUPPORT)
+        ERROR_CASE(EADDRINUSE)
+        ERROR_CASE(EADDRNOTAVAIL)
+        ERROR_CASE(ENETDOWN)
+        ERROR_CASE(ENETUNREACH)
+        ERROR_CASE(ENETRESET)
+        ERROR_CASE(ECONNABORTED)
+        ERROR_CASE(ECONNRESET)
+        ERROR_CASE(ENOBUFS)
+        ERROR_CASE(EISCONN)
+        ERROR_CASE(ENOTCONN)
+        ERROR_CASE(ETIMEDOUT)
+        ERROR_CASE(ECONNREFUSED)
+        ERROR_CASE(ELOOP)
+        ERROR_CASE(ENAMETOOLONG)
+        ERROR_CASE(EHOSTUNREACH)
+        ERROR_CASE(ENOTEMPTY)
+    }
+    *Libraries::Kernel::__Error() = ORBIS_NET_EINTERNAL;
+    return -1;
+}
+
 static int ConvertReturnErrorCode(int retval) {
     if (retval < 0) {
 #ifdef _WIN32
-        switch (WSAGetLastError()) {
+        const int error = WSAGetLastError();
 #else
-        switch (errno) {
+        const int error = errno;
 #endif
-#ifndef _WIN32 // These errorcodes don't exist in WinSock
-            ERROR_CASE(EPERM)
-            ERROR_CASE(ENOENT)
-            // ERROR_CASE(ESRCH)
-            // ERROR_CASE(EIO)
-            // ERROR_CASE(ENXIO)
-            // ERROR_CASE(E2BIG)
-            // ERROR_CASE(ENOEXEC)
-            // ERROR_CASE(EDEADLK)
-            ERROR_CASE(ENOMEM)
-            // ERROR_CASE(ECHILD)
-            // ERROR_CASE(EBUSY)
-            ERROR_CASE(EEXIST)
-            // ERROR_CASE(EXDEV)
-            ERROR_CASE(ENODEV)
-            // ERROR_CASE(ENOTDIR)
-            // ERROR_CASE(EISDIR)
-            ERROR_CASE(ENFILE)
-            // ERROR_CASE(ENOTTY)
-            // ERROR_CASE(ETXTBSY)
-            // ERROR_CASE(EFBIG)
-            ERROR_CASE(ENOSPC)
-            // ERROR_CASE(ESPIPE)
-            // ERROR_CASE(EROFS)
-            // ERROR_CASE(EMLINK)
-            ERROR_CASE(EPIPE)
-            // ERROR_CASE(EDOM)
-            // ERROR_CASE(ERANGE)
-            // ERROR_CASE(ENOLCK)
-            // ERROR_CASE(ENOSYS)
-            // ERROR_CASE(EIDRM)
-            // ERROR_CASE(EOVERFLOW)
-            // ERROR_CASE(EILSEQ)
-            // ERROR_CASE(ENOTSUP)
-            ERROR_CASE(ECANCELED)
-            // ERROR_CASE(EBADMSG)
-            ERROR_CASE(ENODATA)
-            // ERROR_CASE(ENOSR)
-            // ERROR_CASE(ENOSTR)
-            // ERROR_CASE(ETIME)
-#endif
-            ERROR_CASE(EINTR)
-            ERROR_CASE(EBADF)
-            ERROR_CASE(EACCES)
-            ERROR_CASE(EFAULT)
-            ERROR_CASE(EINVAL)
-            ERROR_CASE(EMFILE)
-            ERROR_CASE(EWOULDBLOCK)
-            ERROR_CASE(EINPROGRESS)
-            ERROR_CASE(EALREADY)
-            ERROR_CASE(ENOTSOCK)
-            ERROR_CASE(EDESTADDRREQ)
-            ERROR_CASE(EMSGSIZE)
-            ERROR_CASE(EPROTOTYPE)
-            ERROR_CASE(ENOPROTOOPT)
-            ERROR_CASE(EPROTONOSUPPORT)
-#if defined(__APPLE__) || defined(_WIN32)
-            ERROR_CASE(EOPNOTSUPP)
-#endif
-            ERROR_CASE(EAFNOSUPPORT)
-            ERROR_CASE(EADDRINUSE)
-            ERROR_CASE(EADDRNOTAVAIL)
-            ERROR_CASE(ENETDOWN)
-            ERROR_CASE(ENETUNREACH)
-            ERROR_CASE(ENETRESET)
-            ERROR_CASE(ECONNABORTED)
-            ERROR_CASE(ECONNRESET)
-            ERROR_CASE(ENOBUFS)
-            ERROR_CASE(EISCONN)
-            ERROR_CASE(ENOTCONN)
-            ERROR_CASE(ETIMEDOUT)
-            ERROR_CASE(ECONNREFUSED)
-            ERROR_CASE(ELOOP)
-            ERROR_CASE(ENAMETOOLONG)
-            ERROR_CASE(EHOSTUNREACH)
-            ERROR_CASE(ENOTEMPTY)
-        }
-        *Libraries::Kernel::__Error() = ORBIS_NET_EINTERNAL;
+        ConvertHostErrno(error);
         return -1;
     }
     // if it is 0 or positive return it as it is
     return retval;
+}
+
+static int ConvertSocketErrorOption(int error) {
+    if (error == 0) {
+        return 0;
+    }
+    const int ret = ConvertHostErrno(error);
+    const int orbis_error = *Libraries::Kernel::__Error();
+    *Libraries::Kernel::__Error() = 0;
+    return ret < 0 ? orbis_error : ret;
 }
 
 static int ConvertLevels(int level) {
@@ -626,7 +644,6 @@ int PosixSocket::GetSocketOptions(int level, int optname, void* optval, u32* opt
             CASE_GETSOCKOPT(SO_RCVBUF);
             CASE_GETSOCKOPT(SO_SNDTIMEO);
             CASE_GETSOCKOPT(SO_RCVTIMEO);
-            CASE_GETSOCKOPT(SO_ERROR);
             CASE_GETSOCKOPT(SO_TYPE);
             CASE_GETSOCKOPT_VALUE(ORBIS_NET_SO_NBIO, sockopt_so_nbio);
             CASE_GETSOCKOPT_VALUE(ORBIS_NET_SO_CONNECTTIMEO, sockopt_so_connecttimeo);
@@ -636,11 +653,22 @@ int PosixSocket::GetSocketOptions(int level, int optname, void* optval, u32* opt
             CASE_GETSOCKOPT_VALUE(ORBIS_NET_SO_USESIGNATURE, sockopt_so_usesignature);
             CASE_GETSOCKOPT_VALUE(ORBIS_NET_SO_NAME,
                                   (char)0); // writes an empty string to the output buffer
+        case ORBIS_NET_SO_ERROR: {
+            socklen_t optlen_temp = *optlen;
+            s32 error = 0;
+            const auto retval = ConvertReturnErrorCode(getsockopt(
+                sock, native_level, SO_ERROR, reinterpret_cast<char*>(&error), &optlen_temp));
+            *optlen = sizeof(error);
+            *reinterpret_cast<s32*>(optval) = ConvertSocketErrorOption(error);
+            return retval;
+        }
         case ORBIS_NET_SO_ERROR_EX: {
             socklen_t optlen_temp = *optlen;
-            auto retval = ConvertReturnErrorCode(
-                getsockopt(sock, native_level, SO_ERROR, (char*)optval, &optlen_temp));
-            *optlen = optlen_temp;
+            s32 error = 0;
+            auto retval = ConvertReturnErrorCode(getsockopt(
+                sock, native_level, SO_ERROR, reinterpret_cast<char*>(&error), &optlen_temp));
+            *optlen = sizeof(error);
+            *reinterpret_cast<s32*>(optval) = ConvertSocketErrorOption(error);
             if (retval < 0) {
                 s32 r = *Libraries::Kernel::__Error();
                 *Libraries::Kernel::__Error() = 0;
