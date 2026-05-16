@@ -41,8 +41,9 @@ static bool TrySetCannedUserProfileResponse(OrbisNpWebApiRequest* request) {
     }
 
     if (request->userPath.find("/profile?") != std::string::npos) {
-        SetRequestResponse(request, 200,
-                           R"({"profile":{"onlineId":"shadPS4","accountId":"4277009102","languagesUsed":["en-US"],"presence":{"onlineStatus":"offline"}}})");
+        SetRequestResponse(
+            request, 200,
+            R"({"profile":{"onlineId":"shadPS4","accountId":"4277009102","languagesUsed":["en-US"],"presence":{"onlineStatus":"offline"}}})");
         return true;
     }
 
@@ -53,6 +54,20 @@ static bool TrySetCannedUserProfileResponse(OrbisNpWebApiRequest* request) {
 
     if (request->userPath.find("/blockingUsers?") != std::string::npos) {
         SetRequestResponse(request, 200, R"({"blockingUsers":[]})");
+        return true;
+    }
+
+    return false;
+}
+
+static bool TrySetCannedPresenceResponse(OrbisNpWebApiRequest* request) {
+    if (request->userMethod != OrbisNpWebApiHttpMethod::ORBIS_NP_WEBAPI_HTTP_METHOD_PUT ||
+        request->userApiGroup != "sdk:userProfile") {
+        return false;
+    }
+
+    if (request->userPath.find("/presence/gameStatus") != std::string::npos) {
+        SetRequestResponse(request, 204, {});
         return true;
     }
 
@@ -661,7 +676,7 @@ s32 sendRequest(s64 requestId, s32 partIndex, const void* pData, u64 dataSize, s
         return ORBIS_NP_WEBAPI_ERROR_NOT_SIGNED_IN;
     }
 
-    if (TrySetCannedUserProfileResponse(request)) {
+    if (TrySetCannedUserProfileResponse(request) || TrySetCannedPresenceResponse(request)) {
         FillResponseInformation(request, pRespInfoOption);
         LOG_INFO(Lib_NpWebApi,
                  "Returning canned response, requestId = {:#x}, pApiGroup = '{}', pPath = '{}', "

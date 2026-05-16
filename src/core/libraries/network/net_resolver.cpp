@@ -21,7 +21,7 @@ int Resolver::ResolveAsync(const char* hostname, OrbisNetInAddr* addr, int timeo
         return ORBIS_NET_ERROR_RESOLVER_EBUSY;
     }
 
-    async_resolution = AsyncResolution{hostname, addr, timeout, retry, flags};
+    async_resolution = AsyncResolution{hostname ? hostname : "", addr, timeout, retry, flags};
 
     return ORBIS_OK;
 }
@@ -34,7 +34,8 @@ void Resolver::Resolve() {
 
     if (async_resolution) {
         auto* netinfo = Common::Singleton<NetUtil::NetUtilInternal>::Instance();
-        auto ret = netinfo->ResolveHostname(async_resolution->hostname, async_resolution->addr);
+        auto ret =
+            netinfo->ResolveHostname(async_resolution->hostname.c_str(), async_resolution->addr);
         resolution_error = ret;
         if (ret != ORBIS_OK) {
             // Resolver errors are stored as ORBIS_NET_ERROR values.

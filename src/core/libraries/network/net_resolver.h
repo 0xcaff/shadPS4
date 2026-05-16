@@ -7,6 +7,8 @@
 #include "core/libraries/network/net.h"
 
 #include <mutex>
+#include <optional>
+#include <string>
 #include <vector>
 
 namespace Libraries::Net {
@@ -22,7 +24,7 @@ public:
 
 private:
     struct AsyncResolution {
-        const char* hostname;
+        std::string hostname;
         OrbisNetInAddr* addr;
         int timeout;
         int retry;
