@@ -4,6 +4,8 @@
 #pragma once
 #include <map>
 #include <mutex>
+#include <string>
+#include <vector>
 #include "common/logging/log.h"
 #include "core/libraries/error_codes.h"
 #include "core/libraries/libs.h"
@@ -74,7 +76,8 @@ struct OrbisNpWebApiRequest {
     u8 requestState;
     u64 remainingData;
     u32 readOffset;
-    char data[64];
+    s32 httpStatus;
+    std::vector<char> data;
 };
 
 struct OrbisNpWebApiHandle {
@@ -195,7 +198,7 @@ void startRequestTimer(OrbisNpWebApiRequest* request);       // FUN_0100c0d0
 void checkRequestTimeout(OrbisNpWebApiRequest* request);     // FUN_0100c130
 s32 sendRequest(
     s64 requestId, s32 partIndex, const void* data, u64 dataSize, s8 flag,
-    const OrbisNpWebApiResponseInformationOption* pResponseInformationOption); // FUN_01001c50
+    OrbisNpWebApiResponseInformationOption* pResponseInformationOption); // FUN_01001c50
 s32 abortRequestInternal(OrbisNpWebApiContext* context, OrbisNpWebApiUserContext* userContext,
                          OrbisNpWebApiRequest* request); // FUN_01001b70
 s32 abortRequest(s64 requestId);                         // FUN_01002c70

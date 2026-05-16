@@ -8,6 +8,7 @@
 #include "core/libraries/network/http.h"
 #include "np_web_api_internal.h"
 
+#include <string_view>
 #include <magic_enum/magic_enum.hpp>
 
 namespace Libraries::Np::NpWebApi {
@@ -24,6 +25,52 @@ static s32 g_registered_callback_count = 0;
 static s64 g_request_count = 0;
 static u64 g_last_timeout_check = 0;
 static s32 g_sdk_ver = 0;
+
+static void SetRequestResponse(OrbisNpWebApiRequest* request, s32 httpStatus,
+                               std::string_view body) {
+    request->httpStatus = httpStatus;
+    request->data.assign(body.begin(), body.end());
+    request->remainingData = request->data.size();
+    request->readOffset = 0;
+}
+
+static bool TrySetCannedUserProfileResponse(OrbisNpWebApiRequest* request) {
+    if (request->userMethod != OrbisNpWebApiHttpMethod::ORBIS_NP_WEBAPI_HTTP_METHOD_GET ||
+        request->userApiGroup != "sdk:userProfile") {
+        return false;
+    }
+
+    if (request->userPath.find("/profile?") != std::string::npos) {
+        SetRequestResponse(request, 200,
+                           R"({"profile":{"onlineId":"shadPS4","accountId":"4277009102","languagesUsed":["en-US"],"presence":{"onlineStatus":"offline"}}})");
+        return true;
+    }
+
+    if (request->userPath.find("/friendList?") != std::string::npos) {
+        SetRequestResponse(request, 200, R"({"friends":[]})");
+        return true;
+    }
+
+    if (request->userPath.find("/blockingUsers?") != std::string::npos) {
+        SetRequestResponse(request, 200, R"({"blockingUsers":[]})");
+        return true;
+    }
+
+    return false;
+}
+
+static void FillResponseInformation(const OrbisNpWebApiRequest* request,
+                                    OrbisNpWebApiResponseInformationOption* option) {
+    if (option == nullptr) {
+        return;
+    }
+
+    option->httpStatus = request->httpStatus;
+    option->responseDataSize = request->data.size();
+    if (option->pErrorObject != nullptr && option->errorObjectSize != 0) {
+        option->pErrorObject[0] = '\0';
+    }
+}
 
 s32 initializeLibrary() {
     return Kernel::sceKernelGetCompiledSdkVersion(&g_sdk_ver);
@@ -451,13 +498,14 @@ s32 createRequest(s32 titleUserCtxId, const char* pApiGroup, const char* pPath,
         g_request_count = 1;
     }
 
-    s64 user_ctx_id = static_cast<s64>(titleUserCtxId);
-    s32 request_id = (user_ctx_id << 0x20) | g_request_count;
+    const s64 user_ctx_id = static_cast<s64>(titleUserCtxId);
+    const s64 first_request_id = user_ctx_id << 0x20;
+    s64 request_id = first_request_id | g_request_count;
     while (user_context->requests.contains(request_id)) {
         request_id--;
     }
     // Real library would hang if this assert fails.
-    ASSERT_MSG(request_id <= (user_ctx_id << 0x20), "Too many requests!");
+    ASSERT_MSG(request_id > first_request_id, "Too many requests!");
     user_context->requests[request_id] = new OrbisNpWebApiRequest{};
 
     auto& request = user_context->requests[request_id];
@@ -537,7 +585,7 @@ s32 setRequestTimeout(s64 requestId, u32 timeout) {
         return ORBIS_NP_WEBAPI_ERROR_USER_CONTEXT_NOT_FOUND;
     }
 
-    OrbisNpWebApiRequest* request = findRequestAndMarkBusy(user_context, requestId);
+    OrbisNpWebApiRequest* request = findRequest(user_context, requestId);
     if (request == nullptr) {
         releaseUserContext(user_context);
         releaseContext(context);
@@ -567,7 +615,7 @@ void checkRequestTimeout(OrbisNpWebApiRequest* request) {
 }
 
 s32 sendRequest(s64 requestId, s32 partIndex, const void* pData, u64 dataSize, s8 flag,
-                const OrbisNpWebApiResponseInformationOption* pRespInfoOption) {
+                OrbisNpWebApiResponseInformationOption* pRespInfoOption) {
     OrbisNpWebApiContext* context = findAndValidateContext(requestId >> 0x30);
     if (context == nullptr) {
         return ORBIS_NP_WEBAPI_ERROR_LIB_CONTEXT_NOT_FOUND;
@@ -579,7 +627,7 @@ s32 sendRequest(s64 requestId, s32 partIndex, const void* pData, u64 dataSize, s
         return ORBIS_NP_WEBAPI_ERROR_USER_CONTEXT_NOT_FOUND;
     }
 
-    OrbisNpWebApiRequest* request = findRequestAndMarkBusy(user_context, requestId);
+    OrbisNpWebApiRequest* request = findRequest(user_context, requestId);
     if (request == nullptr) {
         releaseUserContext(user_context);
         releaseContext(context);
@@ -613,11 +661,20 @@ s32 sendRequest(s64 requestId, s32 partIndex, const void* pData, u64 dataSize, s
         return ORBIS_NP_WEBAPI_ERROR_NOT_SIGNED_IN;
     }
 
-    LOG_ERROR(Lib_NpWebApi,
-              "(STUBBED) called, requestId = {:#x}, pApiGroup = '{}', pPath = '{}', pContentType = "
-              "'{}', method = {}, multipart = {}",
-              requestId, request->userApiGroup, request->userPath, request->userContentType,
-              magic_enum::enum_name(request->userMethod), request->multipart);
+    if (TrySetCannedUserProfileResponse(request)) {
+        FillResponseInformation(request, pRespInfoOption);
+        LOG_INFO(Lib_NpWebApi,
+                 "Returning canned response, requestId = {:#x}, pApiGroup = '{}', pPath = '{}', "
+                 "httpStatus = {}, responseDataSize = {}",
+                 requestId, request->userApiGroup, request->userPath, request->httpStatus,
+                 request->data.size());
+    } else {
+        LOG_ERROR(Lib_NpWebApi,
+                  "(STUBBED) called, requestId = {:#x}, pApiGroup = '{}', pPath = '{}', "
+                  "pContentType = '{}', method = {}, multipart = {}",
+                  requestId, request->userApiGroup, request->userPath, request->userContentType,
+                  magic_enum::enum_name(request->userMethod), request->multipart);
+    }
 
     releaseRequest(request);
     releaseUserContext(user_context);
@@ -1390,15 +1447,22 @@ s32 PS4_SYSV_ABI getHttpStatusCodeInternal(s64 requestId, s32* out_status_code) 
         return ORBIS_NP_WEBAPI_ERROR_USER_CONTEXT_NOT_FOUND;
     }
 
-    OrbisNpWebApiRequest* request = findRequest(user_context, requestId);
+    OrbisNpWebApiRequest* request = findRequestAndMarkBusy(user_context, requestId);
     if (request == nullptr) {
         releaseUserContext(user_context);
         releaseContext(context);
         return ORBIS_NP_WEBAPI_ERROR_REQUEST_NOT_FOUND;
     }
 
-    // Query HTTP layer
-    {
+    if (request->httpStatus != 0) {
+        if (out_status_code != nullptr) {
+            *out_status_code = request->httpStatus;
+        }
+        releaseRequest(request);
+        releaseUserContext(user_context);
+        releaseContext(context);
+        return ORBIS_OK;
+    } else {
         int32_t httpReqId = getHttpRequestIdFromRequest(request);
         s32 err = Libraries::Http::sceHttpGetStatusCode(httpReqId, &status_code);
 
@@ -1441,14 +1505,14 @@ void PS4_SYSV_ABI setRequestState(OrbisNpWebApiRequest* request, u8 state) {
 u64 PS4_SYSV_ABI copyRequestData(OrbisNpWebApiRequest* request, void* data, u64 size) {
     u64 readSize = 0;
 
-    if (request->remainingData != 0) {
-        u64 remainingSize = request->remainingData - request->readOffset;
+    if (request->readOffset < request->data.size()) {
+        u64 remainingSize = request->data.size() - request->readOffset;
 
         if (remainingSize != 0) {
             if (remainingSize < size) {
                 size = remainingSize;
             }
-            memcpy(data, request->data + request->readOffset, size);
+            memcpy(data, request->data.data() + request->readOffset, size);
             request->readOffset += static_cast<u32>(size);
             readSize = size;
         }
@@ -1473,7 +1537,7 @@ s32 PS4_SYSV_ABI readDataInternal(s64 requestId, void* pData, u64 size) {
         return ORBIS_NP_WEBAPI_ERROR_USER_CONTEXT_NOT_FOUND;
     }
 
-    OrbisNpWebApiRequest* request = findRequest(user_context, requestId);
+    OrbisNpWebApiRequest* request = findRequestAndMarkBusy(user_context, requestId);
     if (request == nullptr) {
         releaseUserContext(user_context);
         releaseContext(context);
