@@ -910,7 +910,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
 
     for (const auto& image_desc : stage.images) {
         const auto tsharp = image_desc.GetSharp(stage);
-        if (texture_cache.IsMeta(tsharp.Address())) {
+        if (texture_cache.IsMeta(tsharp.Address()) && !image_desc.is_sampled) {
             LOG_WARNING(Render_Vulkan, "Binding null image for metadata texture read");
             const u32 num_bindings = image_desc.NumBindings(stage);
             for (u32 i = 0; i < num_bindings; ++i) {
