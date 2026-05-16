@@ -592,11 +592,14 @@ void Image::CopyImageWithBuffer(Image& src_image, vk::Buffer buffer, u64 offset)
         const auto mip_w = std::max(src_info.size.width >> mip, 1u);
         const auto mip_h = std::max(src_info.size.height >> mip, 1u);
         const auto mip_d = std::max(src_info.size.depth >> mip, 1u);
+        const auto& mip_info = src_info.mips_layout[mip];
+        const auto extent_w = mip_info.pitch ? std::min(mip_info.pitch, mip_w) : mip_w;
+        const auto extent_h = mip_info.height ? std::min(mip_info.height, mip_h) : mip_h;
 
         buffer_copies.emplace_back(vk::BufferImageCopy{
-            .bufferOffset = offset,
-            .bufferRowLength = 0,
-            .bufferImageHeight = 0,
+            .bufferOffset = offset + mip_info.offset,
+            .bufferRowLength = mip_info.pitch,
+            .bufferImageHeight = mip_info.height,
             .imageSubresource{
                 .aspectMask = src_image.aspect_mask & ~vk::ImageAspectFlagBits::eStencil,
                 .mipLevel = mip,
@@ -604,7 +607,7 @@ void Image::CopyImageWithBuffer(Image& src_image, vk::Buffer buffer, u64 offset)
                 .layerCount = num_layers,
             },
             .imageOffset = {0, 0, 0},
-            .imageExtent = {mip_w, mip_h, mip_d},
+            .imageExtent = {extent_w, extent_h, mip_d},
         });
     }
 
