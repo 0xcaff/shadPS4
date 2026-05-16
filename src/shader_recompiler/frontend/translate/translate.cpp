@@ -23,6 +23,18 @@
 
 namespace Shader::Gcn {
 
+static std::pair<IR::U32, IR::U32> ThreadBitMaskDwords(IR::IREmitter& ir, const IR::U1& value) {
+    const IR::Value ballot = ir.Ballot(value);
+    const IR::U32 lo{ir.CompositeExtract(ballot, 0)};
+    const IR::U32 hi{ir.CompositeExtract(ballot, 1)};
+    return {lo, hi};
+}
+
+static IR::U64 PackThreadBitMask(IR::IREmitter& ir, const IR::U1& value) {
+    const auto [lo, hi] = ThreadBitMaskDwords(ir, value);
+    return ir.PackUint2x32(ir.CompositeConstruct(lo, hi));
+}
+
 static IR::VectorReg IterateBarycentrics(const RuntimeInfo& runtime_info, auto&& set_attribute) {
     if (runtime_info.stage != Stage::Fragment) {
         return IR::VectorReg::V0;
@@ -430,6 +442,13 @@ T Translator::GetSrc64(const InstOperand& operand) {
         }
         break;
     }
+    case OperandField::ExecLo:
+        if constexpr (is_float) {
+            UNREACHABLE();
+        } else {
+            value = PackThreadBitMask(ir, ir.GetExec());
+        }
+        break;
     case OperandField::ConstZero:
         value = get_imm(0ULL);
         break;
@@ -511,12 +530,21 @@ template IR::F64 Translator::GetSrc64<IR::F64>(const InstOperand&);
 
 void Translator::SetDst1(const InstOperand& operand, const IR::U1& value) {
     switch (operand.field) {
-    case OperandField::VccLo:
+    case OperandField::VccLo: {
         ir.SetVcc(value);
+        const auto [lo, hi] = ThreadBitMaskDwords(ir, value);
+        ir.SetVccLo(lo);
+        ir.SetVccHi(hi);
         break;
-    case OperandField::ScalarGPR:
-        ir.SetThreadBitScalarReg(IR::ScalarReg(operand.code), value);
+    }
+    case OperandField::ScalarGPR: {
+        const auto reg = IR::ScalarReg(operand.code);
+        ir.SetThreadBitScalarReg(reg, value);
+        const auto [lo, hi] = ThreadBitMaskDwords(ir, value);
+        ir.SetScalarReg(reg, lo);
+        ir.SetScalarReg(reg + 1, hi);
         break;
+    }
     case OperandField::ExecLo:
         ir.SetExec(value);
         break;

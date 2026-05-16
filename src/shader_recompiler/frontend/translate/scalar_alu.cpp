@@ -7,6 +7,17 @@
 
 namespace Shader::Gcn {
 
+namespace {
+
+IR::U1 ThreadBitFromMask(IR::IREmitter& ir, const IR::U64& mask) {
+    const IR::U32 lane = ir.BitwiseAnd(ir.LaneId(), ir.Imm32(0x3f));
+    const IR::U64 shifted{ir.ShiftRightLogical(mask, lane)};
+    const IR::U64 bit{ir.BitwiseAnd(shifted, ir.Imm64(u64(1)))};
+    return ir.INotEqual(bit, ir.Imm64(u64(0)));
+}
+
+} // namespace
+
 void Translator::EmitScalarAlu(const GcnInst& inst) {
     switch (inst.encoding) {
     case InstEncoding::SOPC: {
@@ -524,10 +535,10 @@ void Translator::S_MOV_B64(const GcnInst& inst) {
     // for moving sharps.
     if (inst.dst[0].field == OperandField::ScalarGPR &&
         inst.src[0].field == OperandField::ScalarGPR) {
-        ir.SetScalarReg(IR::ScalarReg(inst.dst[0].code),
-                        ir.GetScalarReg(IR::ScalarReg(inst.src[0].code)));
-        ir.SetScalarReg(IR::ScalarReg(inst.dst[0].code + 1),
-                        ir.GetScalarReg(IR::ScalarReg(inst.src[0].code + 1)));
+        const IR::U64 src = GetSrc64(inst.src[0]);
+        SetDst64(inst.dst[0], src);
+        ir.SetThreadBitScalarReg(IR::ScalarReg(inst.dst[0].code), ThreadBitFromMask(ir, src));
+        return;
     }
     SetDst1(inst.dst[0], GetSrc1(inst.src[0]));
 }
@@ -562,7 +573,7 @@ void Translator::S_FF1_I32_B32(const GcnInst& inst) {
 }
 
 void Translator::S_FF1_I32_B64(const GcnInst& inst) {
-    SetDst(inst.dst[0], ir.BallotFindLsb(ir.Ballot(GetSrc1(inst.src[0]))));
+    SetDst(inst.dst[0], ir.FindILsb(GetSrc64(inst.src[0])));
 }
 
 void Translator::S_FLBIT_I32_B32(const GcnInst& inst) {
