@@ -854,7 +854,10 @@ void EmitContext::DefineBuffers() {
     }
 }
 
-spv::ImageFormat GetFormat(const AmdGpu::Image& image) {
+spv::ImageFormat GetFormat(const AmdGpu::Image& image, bool is_integer_atomic = false) {
+    if (is_integer_atomic && image.GetDataFmt() == AmdGpu::DataFormat::Format32) {
+        return spv::ImageFormat::R32ui;
+    }
     if (image.GetDataFmt() == AmdGpu::DataFormat::Format32 &&
         image.GetNumberFmt() == AmdGpu::NumberFormat::Uint) {
         return spv::ImageFormat::R32ui;
@@ -933,7 +936,8 @@ spv::ImageFormat GetFormat(const AmdGpu::Image& image) {
 
 Id ImageType(EmitContext& ctx, const ImageResource& desc, Id sampled_type) {
     const auto image = desc.GetSharp(ctx.info);
-    const auto format = desc.is_atomic ? GetFormat(image) : spv::ImageFormat::Unknown;
+    const auto format =
+        desc.is_atomic ? GetFormat(image, desc.is_integer_atomic) : spv::ImageFormat::Unknown;
     const auto type = image.GetViewType(desc.is_array);
     const u32 sampled = desc.is_written ? 2 : 1;
     switch (type) {
@@ -959,10 +963,11 @@ void EmitContext::DefineImagesAndSamplers() {
     for (const auto& image_desc : info.images) {
         const auto sharp = image_desc.GetSharp(info);
         const auto nfmt = sharp.GetNumberFmt();
-        const bool is_integer = AmdGpu::IsInteger(nfmt);
+        const bool is_integer = image_desc.is_integer_atomic || AmdGpu::IsInteger(nfmt);
         const bool is_storage = image_desc.is_written;
         const MipStorageFallbackMode mip_fallback_mode = image_desc.mip_fallback_mode;
-        const VectorIds& data_types = GetAttributeType(*this, nfmt);
+        const VectorIds& data_types =
+            image_desc.is_integer_atomic ? U32 : GetAttributeType(*this, nfmt);
         const Id sampled_type = data_types[1];
         const Id image_type{ImageType(*this, image_desc, sampled_type)};
 

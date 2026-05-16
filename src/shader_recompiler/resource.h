@@ -77,6 +77,7 @@ struct ImageResource {
     u32 sharp_idx;
     bool is_depth{};
     bool is_atomic{};
+    bool is_integer_atomic{};
     bool is_sampled{};
     bool is_array{};
     bool is_written{};

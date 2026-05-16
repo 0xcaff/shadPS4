@@ -225,6 +225,11 @@ bool IsImageAtomicInstruction(const IR::Inst& inst) {
     }
 }
 
+bool IsImageIntegerAtomicInstruction(const IR::Inst& inst) {
+    return IsImageAtomicInstruction(inst) && inst.GetOpcode() != IR::Opcode::ImageAtomicFMax32 &&
+           inst.GetOpcode() != IR::Opcode::ImageAtomicFMin32;
+}
+
 bool IsImageInstruction(const IR::Inst& inst) {
     switch (inst.GetOpcode()) {
     case IR::Opcode::ImageRead:
@@ -260,12 +265,14 @@ public:
     u32 Add(const ImageResource& desc) {
         const u32 index{Add(image_resources, desc, [&desc](const auto& existing) {
             return desc.sharp_idx == existing.sharp_idx && desc.is_array == existing.is_array &&
+                   desc.is_integer_atomic == existing.is_integer_atomic &&
                    desc.is_sampled == existing.is_sampled &&
                    desc.mip_fallback_mode == existing.mip_fallback_mode &&
                    desc.constant_mip_index == existing.constant_mip_index;
         })};
         auto& image = image_resources[index];
         image.is_atomic |= desc.is_atomic;
+        image.is_integer_atomic |= desc.is_integer_atomic;
         image.is_sampled |= desc.is_sampled;
         image.is_written |= desc.is_written;
         return index;
@@ -566,6 +573,10 @@ void PatchImageSharp(IR::Block& block, IR::Inst& inst, Info& info, Descriptors& 
 
     auto image = image_res.GetSharp(info);
     ASSERT(image.GetType() != AmdGpu::ImageType::Invalid);
+    image_res.is_integer_atomic =
+        IsImageIntegerAtomicInstruction(inst) &&
+        image.GetDataFmt() == AmdGpu::DataFormat::Format32 &&
+        !AmdGpu::IsInteger(image.GetNumberFmt());
 
     if (needs_mip_storage_fallback) {
         // If the mip level to IMAGE_(LOAD/STORE)_MIP is a constant, set up ImageResource

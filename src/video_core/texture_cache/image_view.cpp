@@ -78,7 +78,9 @@ ImageViewInfo::ImageViewInfo(const AmdGpu::Image& image, const Shader::ImageReso
     : is_storage{desc.is_written} {
     const auto dfmt = image.GetDataFmt();
     auto nfmt = image.GetNumberFmt();
-    if (is_storage && nfmt == AmdGpu::NumberFormat::Srgb) {
+    if (desc.is_integer_atomic && dfmt == AmdGpu::DataFormat::Format32) {
+        nfmt = AmdGpu::NumberFormat::Uint;
+    } else if (is_storage && nfmt == AmdGpu::NumberFormat::Srgb) {
         nfmt = AmdGpu::NumberFormat::Unorm;
     }
     format = Vulkan::LiverpoolToVK::SurfaceFormat(dfmt, nfmt);
