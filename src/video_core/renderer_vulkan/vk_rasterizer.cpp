@@ -1,6 +1,11 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cerrno>
+#include <cstdlib>
+#include <functional>
+#include <limits>
+
 #include "common/debug.h"
 #include "core/emulator_settings.h"
 #include "core/memory.h"
@@ -19,6 +24,102 @@
 #endif
 
 namespace Vulkan {
+
+namespace {
+
+struct GpuCommandDebugConfig {
+    u64 limit{};
+    u64 log_from{};
+    u64 log_every{};
+    u64 log_window{};
+    bool enabled{};
+};
+
+u64 ReadEnvU64(const char* name, u64 fallback = 0) {
+    const char* value = std::getenv(name);
+    if (!value || !*value) {
+        return fallback;
+    }
+
+    errno = 0;
+    char* end{};
+    const auto parsed = std::strtoull(value, &end, 0);
+    if (end == value || *end != '\0' || errno == ERANGE) {
+        LOG_WARNING(Render_Vulkan, "Ignoring invalid {}={}", name, value);
+        return fallback;
+    }
+    if (parsed > std::numeric_limits<u64>::max()) {
+        LOG_WARNING(Render_Vulkan, "Ignoring out-of-range {}={}", name, value);
+        return fallback;
+    }
+    return static_cast<u64>(parsed);
+}
+
+const GpuCommandDebugConfig& GetGpuCommandDebugConfig() {
+    static const GpuCommandDebugConfig config = [] {
+        GpuCommandDebugConfig config{
+            .limit = ReadEnvU64("SHADPS4_GPU_COMMAND_LIMIT"),
+            .log_from = ReadEnvU64("SHADPS4_GPU_COMMAND_LOG_FROM"),
+            .log_every = ReadEnvU64("SHADPS4_GPU_COMMAND_LOG_EVERY"),
+            .log_window = ReadEnvU64("SHADPS4_GPU_COMMAND_LOG_WINDOW", 32),
+        };
+        config.enabled = config.limit != 0 || config.log_from != 0 || config.log_every != 0;
+        if (config.enabled) {
+            LOG_WARNING(Render_Vulkan,
+                        "GPU command debug enabled: limit={} log_from={} log_every={} "
+                        "log_window={}",
+                        config.limit, config.log_from, config.log_every, config.log_window);
+        }
+        return config;
+    }();
+    return config;
+}
+
+u64 NextGpuCommandIndex() {
+    static u64 command_index = 0;
+    return ++command_index;
+}
+
+bool ShouldSkipGpuCommand(u64 command_index) {
+    const auto& config = GetGpuCommandDebugConfig();
+    return config.limit != 0 && command_index > config.limit;
+}
+
+bool ShouldLogGpuCommand(u64 command_index) {
+    const auto& config = GetGpuCommandDebugConfig();
+    if (!config.enabled) {
+        return false;
+    }
+    if (config.log_from != 0 && command_index >= config.log_from) {
+        return config.log_every == 0 || command_index % config.log_every == 0;
+    }
+    if (config.limit != 0 && config.log_window != 0) {
+        const u64 first_window_index =
+            config.limit > config.log_window ? config.limit - config.log_window : 1;
+        const u64 last_window_index =
+            config.limit > std::numeric_limits<u64>::max() - config.log_window
+                ? std::numeric_limits<u64>::max()
+                : config.limit + config.log_window;
+        return command_index >= first_window_index && command_index <= last_window_index;
+    }
+    return config.log_every != 0 && command_index % config.log_every == 0;
+}
+
+size_t StageHash(const GraphicsPipelineKey& key, Shader::LogicalStage stage) {
+    return key.stage_hashes[static_cast<size_t>(stage)];
+}
+
+void LogSkippedGpuCommand(u64 command_index) {
+    static bool logged = false;
+    if (logged) {
+        return;
+    }
+    logged = true;
+    LOG_WARNING(Render_Vulkan, "Skipping GPU commands after diagnostic limit at #{}",
+                command_index - 1);
+}
+
+} // namespace
 
 static Shader::PushData MakeUserData(const AmdGpu::Regs& regs) {
     // TODO(roamic): Add support for multiple viewports and geometry shaders when ViewportIndex
@@ -222,6 +323,28 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     const auto cmdbuf = scheduler.CommandBuffer();
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline->Handle());
 
+    const u64 command_index = NextGpuCommandIndex();
+    if (ShouldLogGpuCommand(command_index)) {
+        const auto& key = pipeline->GetGraphicsKey();
+        LOG_WARNING(Render_Vulkan,
+                    "GPU command #{} draw indexed={} index_count={} instances={} "
+                    "vertex_offset={} instance_offset={} pipeline={:#x} prim={} mrt_mask={:#x} "
+                    "shaders fs={:#x} tcs={:#x} tes={:#x} vs={:#x} gs={:#x}",
+                    command_index, is_indexed, regs.num_indices, regs.num_instances.NumInstances(),
+                    vertex_offset, instance_offset, std::hash<GraphicsPipelineKey>{}(key),
+                    static_cast<u32>(regs.primitive_type), key.mrt_mask,
+                    StageHash(key, Shader::LogicalStage::Fragment),
+                    StageHash(key, Shader::LogicalStage::TessellationControl),
+                    StageHash(key, Shader::LogicalStage::TessellationEval),
+                    StageHash(key, Shader::LogicalStage::Vertex),
+                    StageHash(key, Shader::LogicalStage::Geometry));
+    }
+    if (ShouldSkipGpuCommand(command_index)) {
+        LogSkippedGpuCommand(command_index);
+        ResetBindings();
+        return;
+    }
+
     if (is_indexed) {
         cmdbuf.drawIndexed(regs.num_indices, regs.num_instances.NumInstances(), 0,
                            s32(vertex_offset), instance_offset);
@@ -278,6 +401,28 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
     const auto cmdbuf = scheduler.CommandBuffer();
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline->Handle());
 
+    const u64 command_index = NextGpuCommandIndex();
+    if (ShouldLogGpuCommand(command_index)) {
+        const auto& key = pipeline->GetGraphicsKey();
+        LOG_WARNING(Render_Vulkan,
+                    "GPU command #{} draw_indirect indexed={} arg={:#x}+{:#x} stride={} "
+                    "max_count={} count={:#x} pipeline={:#x} prim={} mrt_mask={:#x} "
+                    "shaders fs={:#x} tcs={:#x} tes={:#x} vs={:#x} gs={:#x}",
+                    command_index, is_indexed, arg_address, offset, stride, max_count,
+                    count_address, std::hash<GraphicsPipelineKey>{}(key),
+                    static_cast<u32>(liverpool->regs.primitive_type), key.mrt_mask,
+                    StageHash(key, Shader::LogicalStage::Fragment),
+                    StageHash(key, Shader::LogicalStage::TessellationControl),
+                    StageHash(key, Shader::LogicalStage::TessellationEval),
+                    StageHash(key, Shader::LogicalStage::Vertex),
+                    StageHash(key, Shader::LogicalStage::Geometry));
+    }
+    if (ShouldSkipGpuCommand(command_index)) {
+        LogSkippedGpuCommand(command_index);
+        ResetBindings();
+        return;
+    }
+
     if (is_indexed) {
         ASSERT(sizeof(VkDrawIndexedIndirectCommand) == stride);
 
@@ -326,6 +471,72 @@ void Rasterizer::DispatchDirect() {
 
     const auto cmdbuf = scheduler.CommandBuffer();
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline->Handle());
+
+    const u64 command_index = NextGpuCommandIndex();
+    if (ShouldLogGpuCommand(command_index)) {
+        LOG_WARNING(Render_Vulkan,
+                    "GPU command #{} dispatch dim=({}, {}, {}) shader={:#x} pipeline_handle={:#x}",
+                    command_index, cs_program.dim_x, cs_program.dim_y, cs_program.dim_z,
+                    pipeline->GetStage(Shader::LogicalStage::Compute).pgm_hash,
+                    reinterpret_cast<uintptr_t>(static_cast<VkPipeline>(pipeline->Handle())));
+    }
+    if (pipeline->GetStage(Shader::LogicalStage::Compute).pgm_hash == 0xff751373 &&
+        ShouldLogGpuCommand(command_index)) {
+        LOG_WARNING(Render_Vulkan, "GPU command #{} shader 0xff751373 has {} image bindings",
+                    command_index, image_bindings.size());
+        LOG_WARNING(Render_Vulkan, "  flatbuf dwords={}", cs.flattened_ud_buf.size());
+        for (u32 i = 0; i < cs.flattened_ud_buf.size(); i += 8) {
+            const u32 v0 = i + 0 < cs.flattened_ud_buf.size() ? cs.flattened_ud_buf[i + 0] : 0;
+            const u32 v1 = i + 1 < cs.flattened_ud_buf.size() ? cs.flattened_ud_buf[i + 1] : 0;
+            const u32 v2 = i + 2 < cs.flattened_ud_buf.size() ? cs.flattened_ud_buf[i + 2] : 0;
+            const u32 v3 = i + 3 < cs.flattened_ud_buf.size() ? cs.flattened_ud_buf[i + 3] : 0;
+            const u32 v4 = i + 4 < cs.flattened_ud_buf.size() ? cs.flattened_ud_buf[i + 4] : 0;
+            const u32 v5 = i + 5 < cs.flattened_ud_buf.size() ? cs.flattened_ud_buf[i + 5] : 0;
+            const u32 v6 = i + 6 < cs.flattened_ud_buf.size() ? cs.flattened_ud_buf[i + 6] : 0;
+            const u32 v7 = i + 7 < cs.flattened_ud_buf.size() ? cs.flattened_ud_buf[i + 7] : 0;
+            LOG_WARNING(Render_Vulkan,
+                        "  flatbuf[{:02}-{:02}]={:#010x} {:#010x} {:#010x} {:#010x} "
+                        "{:#010x} {:#010x} {:#010x} {:#010x}",
+                        i, std::min<u32>(i + 7, cs.flattened_ud_buf.size() - 1), v0, v1, v2, v3,
+                        v4, v5, v6, v7);
+        }
+        for (u32 i = 0; i < image_bindings.size(); ++i) {
+            const auto& [image_id, desc] = image_bindings[i];
+            const auto& resource = cs.images[i];
+            const auto tsharp = resource.GetSharp(cs);
+            LOG_WARNING(
+                Render_Vulkan,
+                "  image[{}] id={} written={} sampled={} sharp_idx={} addr={:#x} "
+                "tsharp={}x{}x{} pitch={} layers={} levels={} type={} fmt={} nfmt={} "
+                "desc={}x{}x{} pitch={} layers={} levels={} guest={:#x}+{:#x} view_type={} "
+                "view_base=({},{}) view_extent=({},{})",
+                i, image_id.index, resource.is_written, resource.is_sampled, resource.sharp_idx,
+                tsharp.Address(), u32(tsharp.width + 1), u32(tsharp.height + 1),
+                u32(tsharp.depth + 1), tsharp.Pitch(), tsharp.NumLayers(), tsharp.NumLevels(),
+                tsharp.GetType(), tsharp.GetDataFmt(), tsharp.GetNumberFmt(), desc.info.size.width,
+                desc.info.size.height, desc.info.size.depth, desc.info.pitch,
+                desc.info.resources.layers, desc.info.resources.levels, desc.info.guest_address,
+                desc.info.guest_size, desc.view_info.type, desc.view_info.range.base.level,
+                desc.view_info.range.base.layer, desc.view_info.range.extent.levels,
+                desc.view_info.range.extent.layers);
+            if (image_id) {
+                const auto& image = texture_cache.GetImage(image_id);
+                const auto extent = image.backing->image.image_ci.extent;
+                LOG_WARNING(Render_Vulkan,
+                            "    backing extent={}x{}x{} format={} usage={:#x} guest={:#x}+{:#x}",
+                            extent.width, extent.height, extent.depth,
+                            vk::to_string(image.backing->image.image_ci.format),
+                            static_cast<VkImageUsageFlags>(image.backing->image.image_ci.usage),
+                            image.info.guest_address, image.info.guest_size);
+            }
+        }
+    }
+    if (ShouldSkipGpuCommand(command_index)) {
+        LogSkippedGpuCommand(command_index);
+        ResetBindings();
+        return;
+    }
+
     cmdbuf.dispatch(cs_program.dim_x, cs_program.dim_y, cs_program.dim_z);
 
     ResetBindings();
@@ -353,6 +564,23 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
 
     const auto cmdbuf = scheduler.CommandBuffer();
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline->Handle());
+
+    const u64 command_index = NextGpuCommandIndex();
+    if (ShouldLogGpuCommand(command_index)) {
+        LOG_WARNING(
+            Render_Vulkan,
+            "GPU command #{} dispatch_indirect arg={:#x}+{:#x} size={} shader={:#x} "
+            "pipeline_handle={:#x}",
+            command_index, address, offset, size,
+            pipeline->GetStage(Shader::LogicalStage::Compute).pgm_hash,
+            reinterpret_cast<uintptr_t>(static_cast<VkPipeline>(pipeline->Handle())));
+    }
+    if (ShouldSkipGpuCommand(command_index)) {
+        LogSkippedGpuCommand(command_index);
+        ResetBindings();
+        return;
+    }
+
     cmdbuf.dispatchIndirect(buffer->Handle(), base);
 
     ResetBindings();
