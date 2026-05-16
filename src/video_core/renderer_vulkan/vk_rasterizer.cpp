@@ -672,14 +672,28 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
     // This is currently always 1 for anything other than mip fallback arrays.
     boost::container::small_vector<u32, 8> image_descriptor_array_sizes;
 
+    const auto bind_null_image = [&](bool is_storage) {
+        auto& [image_id, desc] =
+            image_bindings.emplace_back(std::piecewise_construct, std::tuple{}, std::tuple{});
+        desc.type = is_storage ? VideoCore::TextureCache::BindingType::Storage
+                               : VideoCore::TextureCache::BindingType::Texture;
+        desc.view_info.is_storage = is_storage;
+    };
+
     for (const auto& image_desc : stage.images) {
         const auto tsharp = image_desc.GetSharp(stage);
         if (texture_cache.IsMeta(tsharp.Address())) {
-            LOG_WARNING(Render_Vulkan, "Unexpected metadata read by a shader (texture)");
+            LOG_WARNING(Render_Vulkan, "Binding null image for metadata texture read");
+            const u32 num_bindings = image_desc.NumBindings(stage);
+            for (u32 i = 0; i < num_bindings; ++i) {
+                bind_null_image(image_desc.is_written);
+            }
+            image_descriptor_array_sizes.push_back(num_bindings);
+            continue;
         }
 
         if (tsharp.GetDataFmt() == AmdGpu::DataFormat::FormatInvalid) {
-            image_bindings.emplace_back(std::piecewise_construct, std::tuple{}, std::tuple{});
+            bind_null_image(image_desc.is_written);
             image_descriptor_array_sizes.push_back(1);
             continue;
         }

@@ -86,6 +86,7 @@ TileManager::ScratchBuffer TileManager::GetScratchBuffer(u32 size) {
     };
 
     const VmaAllocationCreateInfo alloc_info{
+        .flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT,
         .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
     };
 
