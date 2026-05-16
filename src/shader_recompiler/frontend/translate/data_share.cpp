@@ -16,28 +16,48 @@ void Translator::EmitDataShare(const GcnInst& inst) {
         return DS_OP<IR::U64>(inst, AtomicOp::Add, false);
     case Opcode::DS_SUB_U32:
         return DS_OP(inst, AtomicOp::Sub, false);
+    case Opcode::DS_SUB_U64:
+        return DS_OP<IR::U64>(inst, AtomicOp::Sub, false);
     case Opcode::DS_INC_U32:
         return DS_OP(inst, AtomicOp::Inc, false);
+    case Opcode::DS_INC_U64:
+        return DS_OP<IR::U64>(inst, AtomicOp::Inc, false);
     case Opcode::DS_DEC_U32:
         return DS_OP(inst, AtomicOp::Dec, false);
+    case Opcode::DS_DEC_U64:
+        return DS_OP<IR::U64>(inst, AtomicOp::Dec, false);
     case Opcode::DS_MIN_I32:
         return DS_OP(inst, AtomicOp::Smin, false);
+    case Opcode::DS_MIN_I64:
+        return DS_OP<IR::U64>(inst, AtomicOp::Smin, false);
     case Opcode::DS_MAX_I32:
         return DS_OP(inst, AtomicOp::Smax, false);
+    case Opcode::DS_MAX_I64:
+        return DS_OP<IR::U64>(inst, AtomicOp::Smax, false);
     case Opcode::DS_MIN_U32:
         return DS_OP(inst, AtomicOp::Umin, false);
+    case Opcode::DS_MIN_U64:
+        return DS_OP<IR::U64>(inst, AtomicOp::Umin, false);
     case Opcode::DS_MAX_U32:
         return DS_OP(inst, AtomicOp::Umax, false);
+    case Opcode::DS_MAX_U64:
+        return DS_OP<IR::U64>(inst, AtomicOp::Umax, false);
     case Opcode::DS_MIN_F32:
         return DS_OP_F32(inst, AtomicOp::Fmin, false);
     case Opcode::DS_MAX_F32:
         return DS_OP_F32(inst, AtomicOp::Fmax, false);
     case Opcode::DS_AND_B32:
         return DS_OP(inst, AtomicOp::And, false);
+    case Opcode::DS_AND_B64:
+        return DS_OP<IR::U64>(inst, AtomicOp::And, false);
     case Opcode::DS_OR_B32:
         return DS_OP(inst, AtomicOp::Or, false);
+    case Opcode::DS_OR_B64:
+        return DS_OP<IR::U64>(inst, AtomicOp::Or, false);
     case Opcode::DS_XOR_B32:
         return DS_OP(inst, AtomicOp::Xor, false);
+    case Opcode::DS_XOR_B64:
+        return DS_OP<IR::U64>(inst, AtomicOp::Xor, false);
     case Opcode::DS_WRITE_B32:
         return DS_WRITE(32, false, false, false, inst);
     case Opcode::DS_WRITE2_B32:
@@ -46,22 +66,52 @@ void Translator::EmitDataShare(const GcnInst& inst) {
         return DS_WRITE(32, false, true, true, inst);
     case Opcode::DS_ADD_RTN_U32:
         return DS_OP(inst, AtomicOp::Add, true);
+    case Opcode::DS_ADD_RTN_U64:
+        return DS_OP<IR::U64>(inst, AtomicOp::Add, true);
     case Opcode::DS_SUB_RTN_U32:
         return DS_OP(inst, AtomicOp::Sub, true);
+    case Opcode::DS_SUB_RTN_U64:
+        return DS_OP<IR::U64>(inst, AtomicOp::Sub, true);
+    case Opcode::DS_INC_RTN_U32:
+        return DS_OP(inst, AtomicOp::Inc, true);
+    case Opcode::DS_INC_RTN_U64:
+        return DS_OP<IR::U64>(inst, AtomicOp::Inc, true);
+    case Opcode::DS_DEC_RTN_U32:
+        return DS_OP(inst, AtomicOp::Dec, true);
+    case Opcode::DS_DEC_RTN_U64:
+        return DS_OP<IR::U64>(inst, AtomicOp::Dec, true);
+    case Opcode::DS_MIN_RTN_I32:
+        return DS_OP(inst, AtomicOp::Smin, true);
+    case Opcode::DS_MIN_RTN_I64:
+        return DS_OP<IR::U64>(inst, AtomicOp::Smin, true);
+    case Opcode::DS_MAX_RTN_I32:
+        return DS_OP(inst, AtomicOp::Smax, true);
+    case Opcode::DS_MAX_RTN_I64:
+        return DS_OP<IR::U64>(inst, AtomicOp::Smax, true);
     case Opcode::DS_MIN_RTN_U32:
         return DS_OP(inst, AtomicOp::Umin, true);
+    case Opcode::DS_MIN_RTN_U64:
+        return DS_OP<IR::U64>(inst, AtomicOp::Umin, true);
     case Opcode::DS_MAX_RTN_U32:
         return DS_OP(inst, AtomicOp::Umax, true);
+    case Opcode::DS_MAX_RTN_U64:
+        return DS_OP<IR::U64>(inst, AtomicOp::Umax, true);
     case Opcode::DS_MIN_RTN_F32:
         return DS_OP_F32(inst, AtomicOp::Fmin, true);
     case Opcode::DS_MAX_RTN_F32:
         return DS_OP_F32(inst, AtomicOp::Fmax, true);
     case Opcode::DS_AND_RTN_B32:
         return DS_OP(inst, AtomicOp::And, true);
+    case Opcode::DS_AND_RTN_B64:
+        return DS_OP<IR::U64>(inst, AtomicOp::And, true);
     case Opcode::DS_OR_RTN_B32:
         return DS_OP(inst, AtomicOp::Or, true);
+    case Opcode::DS_OR_RTN_B64:
+        return DS_OP<IR::U64>(inst, AtomicOp::Or, true);
     case Opcode::DS_XOR_RTN_B32:
         return DS_OP(inst, AtomicOp::Xor, true);
+    case Opcode::DS_XOR_RTN_B64:
+        return DS_OP<IR::U64>(inst, AtomicOp::Xor, true);
     case Opcode::DS_SWIZZLE_B32:
         return DS_SWIZZLE_B32(inst);
     case Opcode::DS_READ_B32:
