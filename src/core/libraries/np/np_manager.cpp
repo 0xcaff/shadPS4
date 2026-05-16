@@ -774,6 +774,11 @@ s32 PS4_SYSV_ABI sceNpRegisterStateCallbackForToolkit(OrbisNpStateCallbackForNpT
     return id;
 }
 
+s32 PS4_SYSV_ABI sceNpSetContentRestriction() {
+    LOG_DEBUG(Lib_NpManager, "(STUBBED) called");
+    return ORBIS_OK;
+}
+
 s32 PS4_SYSV_ABI sceNpBandwidthTestInitStart(const void* param) {
     if (param == nullptr) {
         return ORBIS_NP_ERROR_INVALID_ARGUMENT;
@@ -892,6 +897,8 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
                  sceNpRegisterStateCallback);
     LIB_FUNCTION("hw5KNqAAels", "libSceNpManager", 1, "libSceNpManager",
                  sceNpRegisterNpReachabilityStateCallback);
+    LIB_FUNCTION("A2CQ3kgSopQ", "libSceNpManager", 1, "libSceNpManager",
+                 sceNpSetContentRestriction);
     LIB_FUNCTION("JELHf4xPufo", "libSceNpManagerForToolkit", 1, "libSceNpManager",
                  sceNpCheckCallbackForLib);
     LIB_FUNCTION("0c7HbXRKUt4", "libSceNpManagerForToolkit", 1, "libSceNpManager",

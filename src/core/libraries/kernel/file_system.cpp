@@ -35,6 +35,7 @@
 #else
 #include <sys/select.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 namespace D = Core::Devices;
@@ -1031,6 +1032,13 @@ s32 PS4_SYSV_ABI sceKernelFsync(s32 fd) {
     return result;
 }
 
+s32 PS4_SYSV_ABI sceKernelSync() {
+#ifndef _WIN32
+    ::sync();
+#endif
+    return ORBIS_OK;
+}
+
 static s64 GetDents(s32 fd, char* buf, u64 nbytes, s64* basep) {
     if (buf == nullptr) {
         *__Error() = POSIX_EFAULT;
@@ -1560,6 +1568,7 @@ void RegisterFileSystem(Core::Loader::SymbolsResolver* sym) {
     LIB_FUNCTION("juWbTNM+8hw", "libScePosix", 1, "libkernel", posix_fsync);
     LIB_FUNCTION("juWbTNM+8hw", "libkernel", 1, "libkernel", posix_fsync);
     LIB_FUNCTION("fTx66l5iWIA", "libkernel", 1, "libkernel", sceKernelFsync);
+    LIB_FUNCTION("uvT2iYBBnkY", "libkernel", 1, "libkernel", sceKernelSync);
     LIB_FUNCTION("j2AIqSqJP0w", "libkernel", 1, "libkernel", sceKernelGetdents);
     LIB_FUNCTION("sfKygSjIbI8", "libkernel", 1, "libkernel", getdirentries);
     LIB_FUNCTION("2G6i6hMIUUY", "libkernel", 1, "libkernel", posix_getdents);

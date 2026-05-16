@@ -72,6 +72,7 @@ s64 PS4_SYSV_ABI sceKernelWrite(s32 fd, const void* buf, u64 nbytes);
 s64 PS4_SYSV_ABI sceKernelRead(s32 fd, void* buf, u64 nbytes);
 s64 PS4_SYSV_ABI sceKernelPread(s32 fd, void* buf, u64 nbytes, s64 offset);
 s64 PS4_SYSV_ABI sceKernelPwrite(s32 fd, void* buf, u64 nbytes, s64 offset);
+s32 PS4_SYSV_ABI sceKernelSync();
 void RegisterFileSystem(Core::Loader::SymbolsResolver* sym);
 
 } // namespace Libraries::Kernel
