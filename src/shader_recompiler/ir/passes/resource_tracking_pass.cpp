@@ -573,10 +573,9 @@ void PatchImageSharp(IR::Block& block, IR::Inst& inst, Info& info, Descriptors& 
 
     auto image = image_res.GetSharp(info);
     ASSERT(image.GetType() != AmdGpu::ImageType::Invalid);
-    image_res.is_integer_atomic =
-        IsImageIntegerAtomicInstruction(inst) &&
-        image.GetDataFmt() == AmdGpu::DataFormat::Format32 &&
-        !AmdGpu::IsInteger(image.GetNumberFmt());
+    image_res.is_integer_atomic = IsImageIntegerAtomicInstruction(inst) &&
+                                  image.GetDataFmt() == AmdGpu::DataFormat::Format32 &&
+                                  !AmdGpu::IsInteger(image.GetNumberFmt());
 
     if (needs_mip_storage_fallback) {
         // If the mip level to IMAGE_(LOAD/STORE)_MIP is a constant, set up ImageResource
@@ -683,7 +682,7 @@ void PatchImageSharp(IR::Block& block, IR::Inst& inst, Info& info, Descriptors& 
 void PatchGlobalDataShareAccess(IR::Block& block, IR::Inst& inst, Info& info,
                                 Descriptors& descriptors, const Profile& profile) {
     const u32 binding = descriptors.Add(BufferResource{
-        .used_types = IR::Type::U32,
+        .used_types = IR::Type::U32 | IR::Type::U64,
         .inline_cbuf = AmdGpu::Buffer::Null(),
         .buffer_type = BufferType::GdsBuffer,
         .is_written = true,
@@ -789,8 +788,8 @@ void PatchGlobalDataShareAccess(IR::Block& block, IR::Inst& inst, Info& info,
         case IR::Opcode::SharedAtomicSMin64:
         case IR::Opcode::SharedAtomicUMin64: {
             const bool is_signed = inst.GetOpcode() == IR::Opcode::SharedAtomicSMin64;
-            inst.ReplaceUsesWith(ir.BufferAtomicIMin(handle, address_qwords, IR::U64{inst.Arg(1)},
-                                                     is_signed, {}));
+            inst.ReplaceUsesWith(
+                ir.BufferAtomicIMin(handle, address_qwords, IR::U64{inst.Arg(1)}, is_signed, {}));
             break;
         }
         case IR::Opcode::SharedAtomicSMax32:
@@ -803,8 +802,8 @@ void PatchGlobalDataShareAccess(IR::Block& block, IR::Inst& inst, Info& info,
         case IR::Opcode::SharedAtomicSMax64:
         case IR::Opcode::SharedAtomicUMax64: {
             const bool is_signed = inst.GetOpcode() == IR::Opcode::SharedAtomicSMax64;
-            inst.ReplaceUsesWith(ir.BufferAtomicIMax(handle, address_qwords, IR::U64{inst.Arg(1)},
-                                                     is_signed, {}));
+            inst.ReplaceUsesWith(
+                ir.BufferAtomicIMax(handle, address_qwords, IR::U64{inst.Arg(1)}, is_signed, {}));
             break;
         }
         case IR::Opcode::SharedAtomicInc32:
