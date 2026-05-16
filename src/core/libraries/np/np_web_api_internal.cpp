@@ -1550,8 +1550,9 @@ s32 PS4_SYSV_ABI readDataInternal(s64 requestId, void* pData, u64 size) {
     offset = (u32)bytesCopied;
     remainingSize = size - offset;
 
-    // If caller wants more data than buffered
-    if (remainingSize != 0) {
+    // Canned responses are fully owned by the request. Once their buffered data is exhausted,
+    // report EOF instead of falling through to the unrelated HTTP stub.
+    if (remainingSize != 0 && request->httpStatus == 0) {
         lockContext(context);
         setRequestState(request, 5); // TODO add request states?
 
