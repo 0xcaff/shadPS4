@@ -3,6 +3,7 @@
 
 #include <sirit/sirit.h>
 #include "shader_recompiler/backend/spirv/emit_spirv_quad_rect.h"
+#include "shader_recompiler/ir/attribute.h"
 #include "shader_recompiler/runtime_info.h"
 
 namespace Shader::Backend::SPIRV {
@@ -12,8 +13,9 @@ using Sirit::Id;
 constexpr u32 SPIRV_VERSION_1_5 = 0x00010500;
 
 struct QuadRectListEmitter : public Sirit::Module {
-    explicit QuadRectListEmitter(const FragmentRuntimeInfo& fs_info_)
-        : Sirit::Module{SPIRV_VERSION_1_5}, fs_info{fs_info_} {
+    explicit QuadRectListEmitter(const FragmentRuntimeInfo& fs_info_, u32 vs_output_param_mask_)
+        : Sirit::Module{SPIRV_VERSION_1_5}, fs_info{fs_info_},
+          vs_output_param_mask{vs_output_param_mask_} {
         void_id = TypeVoid();
         bool_id = TypeBool();
         float_id = TypeFloat(32);
@@ -24,8 +26,10 @@ struct QuadRectListEmitter : public Sirit::Module {
         vec3_id = TypeVector(float_id, 3);
         vec4_id = TypeVector(float_id, 4);
 
+        float_zero = Constant(float_id, 0.0f);
         float_one = Constant(float_id, 1.0f);
         float_min_one = Constant(float_id, -1.0f);
+        vec4_zero = ConstantComposite(vec4_id, float_zero, float_zero, float_zero, float_zero);
         int_zero = Constant(int_id, 0);
 
         const Id float_arr{TypeArray(float_id, Constant(uint_id, 1U))};
@@ -117,6 +121,10 @@ struct QuadRectListEmitter : public Sirit::Module {
 
         // Set attributes
         for (int i = 0; i < inputs.size(); i++) {
+            if (!input_present[i]) {
+                OpStore(OpAccessChain(output_vec4, outputs[i], invocation_id), vec4_zero);
+                continue;
+            }
             // vec4 in_paramN3 = interpolate(bary_coord, in_paramN[0], in_paramN[1], in_paramN[2]);
             const Id v0{OpLoad(vec4_id, OpAccessChain(input_vec4, inputs[i], Int(0)))};
             const Id v1{OpLoad(vec4_id, OpAccessChain(input_vec4, inputs[i], Int(1)))};
@@ -162,6 +170,10 @@ struct QuadRectListEmitter : public Sirit::Module {
         OpStore(OpAccessChain(output_vec4, gl_out, invocation_id, Int(0)), in_position);
 
         for (int i = 0; i < inputs.size(); i++) {
+            if (!input_present[i]) {
+                OpStore(OpAccessChain(output_vec4, outputs[i], invocation_id), vec4_zero);
+                continue;
+            }
             // out_paramN[gl_InvocationID] = in_paramN[gl_InvocationID];
             const Id in_param{OpLoad(vec4_id, OpAccessChain(input_vec4, inputs[i], index))};
             OpStore(OpAccessChain(output_vec4, outputs[i], invocation_id), in_param);
@@ -266,6 +278,7 @@ private:
     }
 
     void DefineInputs(spv::ExecutionModel model) {
+        const bool is_aux_tcs = model == spv::ExecutionModel::TessellationControl;
         if (model == spv::ExecutionModel::TessellationEvaluation) {
             gl_tess_coord = AddInput(vec3_id);
             Decorate(gl_tess_coord, spv::Decoration::BuiltIn, spv::BuiltIn::TessCoord);
@@ -277,14 +290,25 @@ private:
         gl_in = AddInput(gl_per_vertex_array);
         const Id float_arr{TypeArray(vec4_id, Int(32))};
         inputs.reserve(fs_info.num_inputs);
+        input_present.reserve(fs_info.num_inputs);
         for (int i = 0; i < fs_info.num_inputs; i++) {
             const auto& input = fs_info.inputs[i];
             if (input.IsDefault()) {
                 continue;
             }
-            inputs.emplace_back(AddInput(float_arr));
-            Decorate(inputs.back(), spv::Decoration::Location, input.param_index);
+            const bool present = !is_aux_tcs || VsOutputsParam(input.param_index);
+            input_present.push_back(present);
+            if (present) {
+                inputs.emplace_back(AddInput(float_arr));
+                Decorate(inputs.back(), spv::Decoration::Location, input.param_index);
+            } else {
+                inputs.emplace_back(Id{});
+            }
         }
+    }
+
+    bool VsOutputsParam(u32 param_index) const {
+        return param_index < IR::NumParams && ((vs_output_param_mask & (1U << param_index)) != 0);
     }
 
 private:
@@ -299,8 +323,10 @@ private:
     Id vec2_id;
     Id vec3_id;
     Id vec4_id;
+    Id float_zero;
     Id float_one;
     Id float_min_one;
+    Id vec4_zero;
     Id int_zero;
     Id gl_per_vertex_type;
     Id gl_in;
@@ -316,11 +342,14 @@ private:
     };
     std::vector<Id> inputs;
     std::vector<Id> outputs;
+    std::vector<bool> input_present;
     std::vector<Id> interfaces;
+    u32 vs_output_param_mask;
 };
 
-std::vector<u32> EmitAuxilaryTessShader(AuxShaderType type, const FragmentRuntimeInfo& fs_info) {
-    QuadRectListEmitter ctx{fs_info};
+std::vector<u32> EmitAuxilaryTessShader(AuxShaderType type, const FragmentRuntimeInfo& fs_info,
+                                        u32 vs_output_param_mask) {
+    QuadRectListEmitter ctx{fs_info, vs_output_param_mask};
     switch (type) {
     case AuxShaderType::RectListTCS:
         ctx.EmitRectListTCS();

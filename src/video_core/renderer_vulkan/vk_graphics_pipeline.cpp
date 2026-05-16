@@ -7,6 +7,7 @@
 
 #include "common/assert.h"
 #include "shader_recompiler/backend/spirv/emit_spirv_quad_rect.h"
+#include "shader_recompiler/info.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -33,6 +34,20 @@ static bool IsPrimitiveTopologyList(const vk::PrimitiveTopology topology) {
            topology == vk::PrimitiveTopology::eLineListWithAdjacency ||
            topology == vk::PrimitiveTopology::eTriangleListWithAdjacency ||
            topology == vk::PrimitiveTopology::ePatchList;
+}
+
+static u32 GetParamStoreMask(const Shader::Info* info) {
+    u32 mask = 0;
+    if (!info) {
+        return mask;
+    }
+    for (u32 i = 0; i < Shader::IR::NumParams; i++) {
+        const auto param = Shader::IR::Attribute::Param0 + static_cast<int>(i);
+        if (info->stores.GetAny(param)) {
+            mask |= 1U << i;
+        }
+    }
+    return mask;
 }
 
 GraphicsPipeline::GraphicsPipeline(
@@ -203,7 +218,10 @@ GraphicsPipeline::GraphicsPipeline(
         const auto type = is_quad_list ? AuxShaderType::QuadListTCS : AuxShaderType::RectListTCS;
         if (!preloading) {
             const auto& fs_info = runtime_infos[u32(Shader::LogicalStage::Fragment)].fs_info;
-            sdata.tcs = Shader::Backend::SPIRV::EmitAuxilaryTessShader(type, fs_info);
+            const auto vs_output_param_mask =
+                GetParamStoreMask(infos[u32(Shader::LogicalStage::Vertex)]);
+            sdata.tcs =
+                Shader::Backend::SPIRV::EmitAuxilaryTessShader(type, fs_info, vs_output_param_mask);
         }
         shader_stages.emplace_back(vk::PipelineShaderStageCreateInfo{
             .stage = vk::ShaderStageFlagBits::eTessellationControl,
