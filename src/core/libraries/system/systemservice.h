@@ -585,7 +585,7 @@ int PS4_SYSV_ABI sceSystemServiceDisablePartyVoice();
 int PS4_SYSV_ABI sceSystemServiceReenablePartyVoice();
 int PS4_SYSV_ABI sceSystemServiceGetPlatformPrivacyDefinitionData();
 int PS4_SYSV_ABI sceSystemServiceGetPlatformPrivacyDefinitionVersion();
-int PS4_SYSV_ABI sceSystemServiceGetPlatformPrivacySetting();
+s32 PS4_SYSV_ABI sceSystemServiceGetPlatformPrivacySetting(s32* setting);
 int PS4_SYSV_ABI sceSystemServiceDeclareReadyForSuspend();
 int PS4_SYSV_ABI sceSystemServiceDisableSuspendNotification();
 int PS4_SYSV_ABI sceSystemServiceEnableSuspendNotification();

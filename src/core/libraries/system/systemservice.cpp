@@ -2341,8 +2341,11 @@ int PS4_SYSV_ABI sceSystemServiceGetPlatformPrivacyDefinitionVersion() {
     return ORBIS_OK;
 }
 
-int PS4_SYSV_ABI sceSystemServiceGetPlatformPrivacySetting() {
-    LOG_ERROR(Lib_SystemService, "(STUBBED) called");
+s32 PS4_SYSV_ABI sceSystemServiceGetPlatformPrivacySetting(s32* setting) {
+    LOG_DEBUG(Lib_SystemService, "(STUBBED) called");
+    if (setting != nullptr) {
+        *setting = 0;
+    }
     return ORBIS_OK;
 }
 
