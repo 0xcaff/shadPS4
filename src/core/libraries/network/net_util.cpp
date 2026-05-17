@@ -376,6 +376,11 @@ bool NetUtilInternal::RetrieveIp() {
 }
 
 int NetUtilInternal::ResolveHostname(const char* hostname, Libraries::Net::OrbisNetInAddr* addr) {
+    if (hostname && strcmp(hostname, "prod.puprod.indreams.me") == 0) {
+        LOG_WARNING(Lib_Net, "Forcing Dreams service hostname {} unavailable", hostname);
+        return ORBIS_NET_RESOLVER_ENODNS;
+    }
+
     const addrinfo hints = {
         .ai_flags = AI_V4MAPPED | AI_ADDRCONFIG,
         .ai_family = AF_INET,
