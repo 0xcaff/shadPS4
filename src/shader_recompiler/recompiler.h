@@ -27,7 +27,8 @@ struct Pools {
     }
 };
 
-[[nodiscard]] IR::Program TranslateProgram(const std::span<const u32>& code, Pools& pools,
+[[nodiscard]] IR::Program TranslateProgram(const std::span<const u32>& code,
+                                           const std::span<const u32>& code_data, Pools& pools,
                                            Info& info, RuntimeInfo& runtime_info,
                                            const Profile& profile);
 

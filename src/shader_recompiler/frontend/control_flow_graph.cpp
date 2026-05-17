@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <limits>
+#include <optional>
+#include <span>
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "shader_recompiler/frontend/control_flow_graph.h"
@@ -76,8 +79,7 @@ static bool IsZero(const InstOperand& operand) {
            (operand.field == OperandField::LiteralConst && operand.code == 0);
 }
 
-static std::optional<u32> GetLiteralOperand(const GcnInst& inst, u32 pc_low_reg,
-                                            bool& pc_is_src0) {
+static std::optional<u32> GetLiteralOperand(const GcnInst& inst, u32 pc_low_reg, bool& pc_is_src0) {
     if (inst.src_count < 2) {
         return std::nullopt;
     }
@@ -163,10 +165,157 @@ static std::optional<u32> ResolveSetPcTarget(std::span<const GcnInst> list, u32 
     return std::nullopt;
 }
 
+struct JumpTableInfo {
+    u32 target_reg;
+    boost::container::small_vector<u32, 24> targets;
+};
+
+static bool IsInstructionPc(std::span<const u32> pc_map, u32 pc) {
+    return pc < pc_map.back() && std::ranges::binary_search(pc_map, pc);
+}
+
+static std::optional<u32> GetOtherScalarOperand(const GcnInst& inst, u32 reg) {
+    if (inst.src_count < 2) {
+        return std::nullopt;
+    }
+    if (IsScalarReg(inst.src[0], reg) && inst.src[1].field == OperandField::ScalarGPR) {
+        return inst.src[1].code;
+    }
+    if (inst.src[0].field == OperandField::ScalarGPR && IsScalarReg(inst.src[1], reg)) {
+        return inst.src[0].code;
+    }
+    return std::nullopt;
+}
+
+static bool IsLoadDwordx2(const GcnInst& inst) {
+    return inst.category == InstCategory::ScalarMemory && inst.control.smrd.count >= 2 &&
+           inst.dst_count >= 1 && inst.src_count >= 1 &&
+           inst.src[0].field == OperandField::ScalarGPR;
+}
+
+static std::optional<u32> ResolvePcRelativeLow(std::span<const GcnInst> list, u32 before_index,
+                                               u32 pc_low_reg, std::span<const u32> pc_map) {
+    if (before_index < 2) {
+        return std::nullopt;
+    }
+
+    const u32 first_candidate = before_index > 12 ? before_index - 12 : 1;
+    for (u32 arith_index = before_index - 1; arith_index >= first_candidate; --arith_index) {
+        const u32 getpc_index = arith_index - 1;
+        const auto& getpc = list[getpc_index];
+        const auto& arith = list[arith_index];
+        if (getpc.opcode != Opcode::S_GETPC_B64 || getpc.dst_count < 1 ||
+            !IsScalarReg(getpc.dst[0], pc_low_reg) || arith.dst_count < 1 ||
+            !IsScalarReg(arith.dst[0], pc_low_reg) ||
+            !(arith.opcode == Opcode::S_ADD_U32 || arith.opcode == Opcode::S_SUB_U32)) {
+            continue;
+        }
+
+        bool pc_is_src0{};
+        const auto imm = GetLiteralOperand(arith, pc_low_reg, pc_is_src0);
+        if (!imm) {
+            continue;
+        }
+
+        const u32 base_pc = pc_map[getpc_index] + getpc.length;
+        if (arith.opcode == Opcode::S_ADD_U32) {
+            return base_pc + *imm;
+        }
+        return pc_is_src0 ? base_pc - *imm : *imm - base_pc;
+    }
+    return std::nullopt;
+}
+
+static void AddUniqueTarget(boost::container::small_vector<u32, 24>& targets, u32 target) {
+    if (std::ranges::find(targets, target) == targets.end()) {
+        targets.push_back(target);
+    }
+}
+
+static std::optional<JumpTableInfo> ResolveSetPcJumpTable(std::span<const GcnInst> list,
+                                                          u32 setpc_index,
+                                                          std::span<const u32> pc_map,
+                                                          std::span<const u32> code_data) {
+    if (code_data.empty() || setpc_index < 4 || list[setpc_index].opcode != Opcode::S_SETPC_B64 ||
+        list[setpc_index].src_count < 1 ||
+        list[setpc_index].src[0].field != OperandField::ScalarGPR) {
+        return std::nullopt;
+    }
+
+    const u32 target_low_reg = list[setpc_index].src[0].code;
+    const u32 first_getpc = setpc_index > 8 ? setpc_index - 8 : 0;
+    for (u32 getpc_index = setpc_index; getpc_index-- > first_getpc;) {
+        const auto& getpc = list[getpc_index];
+        if (getpc.opcode != Opcode::S_GETPC_B64 || getpc.dst_count < 1 ||
+            !IsScalarReg(getpc.dst[0], target_low_reg)) {
+            continue;
+        }
+
+        const u32 branch_base_pc = pc_map[getpc_index] + getpc.length;
+        for (u32 add_index = getpc_index + 1; add_index < setpc_index; ++add_index) {
+            const auto& add = list[add_index];
+            if (add.opcode != Opcode::S_ADD_U32 || add.dst_count < 1 ||
+                !IsScalarReg(add.dst[0], target_low_reg)) {
+                continue;
+            }
+            const auto loaded_low_reg = GetOtherScalarOperand(add, target_low_reg);
+            if (!loaded_low_reg) {
+                continue;
+            }
+
+            for (u32 load_index = getpc_index; load_index-- > first_getpc;) {
+                const auto& load = list[load_index];
+                if (!IsLoadDwordx2(load) || load.dst[0].code != *loaded_low_reg) {
+                    continue;
+                }
+
+                const u32 table_base_reg = load.src[0].code * 2;
+                const auto table_pc =
+                    ResolvePcRelativeLow(list, load_index, table_base_reg, pc_map);
+                if (!table_pc || (*table_pc % sizeof(u32)) != 0) {
+                    continue;
+                }
+
+                const u32 table_index = *table_pc / sizeof(u32);
+                if (table_index + 1 >= code_data.size()) {
+                    continue;
+                }
+
+                JumpTableInfo table{.target_reg = target_low_reg};
+                for (u32 i = 0; i < 64 && table_index + i * 2 + 1 < code_data.size(); ++i) {
+                    const u64 low = code_data[table_index + i * 2];
+                    const u64 high = code_data[table_index + i * 2 + 1];
+                    const s64 relative = static_cast<s64>(low | (high << 32));
+                    const s64 target = static_cast<s64>(branch_base_pc) + relative;
+                    if (target < 0 || target > std::numeric_limits<u32>::max() ||
+                        !IsInstructionPc(pc_map, static_cast<u32>(target))) {
+                        break;
+                    }
+                    if (target == branch_base_pc && !table.targets.empty()) {
+                        break;
+                    }
+                    AddUniqueTarget(table.targets, static_cast<u32>(target));
+                }
+
+                if (!table.targets.empty()) {
+                    LOG_INFO(Render_Recompiler,
+                             "Resolved dynamic S_SETPC_B64 jump table at PC {:#x}: table={:#x}, "
+                             "targets={}",
+                             pc_map[setpc_index], *table_pc, table.targets.size());
+                    return table;
+                }
+            }
+        }
+    }
+
+    return std::nullopt;
+}
+
 static constexpr size_t LabelReserveSize = 32;
 
-CFG::CFG(Common::ObjectPool<Block>& block_pool_, std::span<const GcnInst> inst_list_)
-    : block_pool{block_pool_}, inst_list{inst_list_} {
+CFG::CFG(Common::ObjectPool<Block>& block_pool_, std::span<const GcnInst> inst_list_,
+         std::span<const u32> code_data_)
+    : block_pool{block_pool_}, inst_list{inst_list_}, code_data{code_data_} {
     index_to_pc.resize(inst_list.size() + 1);
     labels.reserve(LabelReserveSize);
     EmitLabels();
@@ -176,6 +325,13 @@ CFG::CFG(Common::ObjectPool<Block>& block_pool_, std::span<const GcnInst> inst_l
 }
 
 void CFG::EmitLabels() {
+    u32 mapped_pc = 0;
+    for (u32 i = 0; i < inst_list.size(); ++i) {
+        index_to_pc[i] = mapped_pc;
+        mapped_pc += inst_list[i].length;
+    }
+    index_to_pc[inst_list.size()] = mapped_pc;
+
     // Always set a label at entry point.
     u32 pc = 0;
     AddLabel(pc);
@@ -189,6 +345,13 @@ void CFG::EmitLabels() {
             if (inst.opcode == Opcode::S_SETPC_B64) {
                 if (auto t = ResolveSetPcTarget(inst_list, i, index_to_pc)) {
                     target = *t;
+                } else if (auto jt = ResolveSetPcJumpTable(inst_list, i, index_to_pc, code_data)) {
+                    for (const u32 table_target : jt->targets) {
+                        AddLabel(table_target);
+                    }
+                    AddLabel(pc + inst.length);
+                    pc += inst.length;
+                    continue;
                 } else {
                     LOG_WARNING(Render_Recompiler,
                                 "Treating unresolved dynamic S_SETPC_B64 at PC {:#x} (Index {}) "
@@ -216,7 +379,6 @@ void CFG::EmitLabels() {
 
         pc += inst.length;
     }
-    index_to_pc[inst_list.size()] = pc;
 
     // Sort labels to make sure block insertion is correct.
     std::ranges::sort(labels);
@@ -395,6 +557,18 @@ void CFG::LinkBlocks() {
         if (end_inst.opcode == Opcode::S_SETPC_B64) {
             auto tgt = ResolveSetPcTarget(inst_list, block.end_index, index_to_pc);
             if (!tgt) {
+                if (auto jt =
+                        ResolveSetPcJumpTable(inst_list, block.end_index, index_to_pc, code_data)) {
+                    block.end_class = EndClass::Switch;
+                    block.switch_reg = jt->target_reg;
+                    for (const u32 table_target : jt->targets) {
+                        block.switch_targets.push_back({
+                            .pc = table_target,
+                            .block = get_block(table_target),
+                        });
+                    }
+                    continue;
+                }
                 LOG_WARNING(Render_Recompiler,
                             "Treating unresolved dynamic S_SETPC_B64 at PC {:#x} (Index {}) as "
                             "a terminal branch",
@@ -451,6 +625,11 @@ std::string CFG::Dot() const {
             }
             if (block.cond != IR::Condition::True) {
                 add_branch(block.branch_false, false);
+            }
+            break;
+        case EndClass::Switch:
+            for (const auto& target : block.switch_targets) {
+                add_branch(target.block, false);
             }
             break;
         case EndClass::Exit:

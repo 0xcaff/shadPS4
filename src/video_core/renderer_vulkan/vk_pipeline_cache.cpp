@@ -542,13 +542,15 @@ bool PipelineCache::RefreshComputeKey() {
 }
 
 vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::RuntimeInfo& runtime_info,
-                                              const std::span<const u32>& code, size_t perm_idx,
-                                              Shader::Backend::Bindings& binding) {
+                                              const std::span<const u32>& code,
+                                              const std::span<const u32>& code_data,
+                                              size_t perm_idx, Shader::Backend::Bindings& binding) {
     LOG_INFO(Render_Vulkan, "Compiling {} shader {:#x} {}", info.stage, info.pgm_hash,
              perm_idx != 0 ? "(permutation)" : "");
     DumpShader(code, info.pgm_hash, info.stage, perm_idx, "bin");
 
-    const auto ir_program = Shader::TranslateProgram(code, pools, info, runtime_info, profile);
+    const auto ir_program =
+        Shader::TranslateProgram(code, code_data, pools, info, runtime_info, profile);
     auto spv = Shader::Backend::SPIRV::EmitSPIRV(profile, runtime_info, ir_program, binding);
     DumpShader(spv, info.pgm_hash, info.stage, perm_idx, "spv");
 
@@ -583,7 +585,8 @@ PipelineCache::Result PipelineCache::GetProgram(Stage stage, LogicalStage l_stag
         it_pgm.value() = std::make_unique<Program>(stage, l_stage, params);
         auto& program = it_pgm.value();
         auto start = binding;
-        const auto module = CompileModule(program->info, runtime_info, params.code, 0, binding);
+        const auto module =
+            CompileModule(program->info, runtime_info, params.code, params.code_data, 0, binding);
         auto spec = Shader::StageSpecialization(program->info, runtime_info, profile, start);
         const auto perm_hash = HashCombine(params.hash, 0);
 
@@ -608,7 +611,8 @@ PipelineCache::Result PipelineCache::GetProgram(Stage stage, LogicalStage l_stag
     const auto it = std::ranges::find(program->modules, spec, &Program::Module::spec);
     if (it == program->modules.end()) {
         auto new_info = Shader::Info(stage, l_stage, params);
-        module = CompileModule(new_info, runtime_info, params.code, perm_idx, binding);
+        module =
+            CompileModule(new_info, runtime_info, params.code, params.code_data, perm_idx, binding);
 
         RegisterShaderMeta(info, spec.fetch_shader_data, spec, perm_hash, perm_idx);
         program->AddPermut(module, std::move(spec));

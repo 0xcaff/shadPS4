@@ -231,9 +231,11 @@ static constexpr const BinaryInfo& SearchBinaryInfo(const u32* code) {
 static constexpr Shader::ShaderParams GetParams(const auto& sh) {
     const auto* code = sh.template Address<u32*>();
     const auto& bininfo = SearchBinaryInfo(code);
+    constexpr u32 ShaderDataDwords = 0x4000;
     return {
         .user_data = sh.user_data,
         .code = std::span{code, bininfo.length / sizeof(u32)},
+        .code_data = std::span{code, ShaderDataDwords},
         .hash = bininfo.shader_hash,
     };
 }

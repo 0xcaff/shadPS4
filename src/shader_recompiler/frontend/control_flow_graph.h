@@ -22,7 +22,15 @@ using Hook =
 
 enum class EndClass {
     Branch, ///< Block ends with a (un)conditional branch.
+    Switch, ///< Block ends with a resolved indirect jump table.
     Exit,   ///< Block ends with an exit instruction.
+};
+
+struct Block;
+
+struct SwitchTarget {
+    u32 pc;
+    Block* block{};
 };
 
 /// A block represents a linear range of instructions.
@@ -42,6 +50,8 @@ struct Block : Hook {
     EndClass end_class{};
     Block* branch_true{};
     Block* branch_false{};
+    u32 switch_reg{};
+    boost::container::small_vector<SwitchTarget, 24> switch_targets;
     bool is_dummy{};
 };
 
@@ -49,7 +59,8 @@ class CFG {
     using Label = u32;
 
 public:
-    explicit CFG(Common::ObjectPool<Block>& block_pool, std::span<const GcnInst> inst_list);
+    explicit CFG(Common::ObjectPool<Block>& block_pool, std::span<const GcnInst> inst_list,
+                 std::span<const u32> code_data);
 
     [[nodiscard]] std::string Dot() const;
 
@@ -78,6 +89,7 @@ private:
 public:
     Common::ObjectPool<Block>& block_pool;
     std::span<const GcnInst> inst_list;
+    std::span<const u32> code_data;
     std::vector<u32> index_to_pc;
     boost::container::small_vector<Label, 16> labels;
     boost::intrusive::set<Block> blocks;

@@ -28,7 +28,8 @@ IR::BlockList GenerateBlocks(const IR::AbstractSyntaxList& syntax_list) {
     return blocks;
 }
 
-IR::Program TranslateProgram(const std::span<const u32>& code, Pools& pools, Info& info,
+IR::Program TranslateProgram(const std::span<const u32>& code,
+                             const std::span<const u32>& code_data, Pools& pools, Info& info,
                              RuntimeInfo& runtime_info, const Profile& profile) {
     // Ensure first instruction is expected.
     constexpr u32 token_mov_vcchi = 0xBEEB03FF;
@@ -51,7 +52,7 @@ IR::Program TranslateProgram(const std::span<const u32>& code, Pools& pools, Inf
 
     // Create control flow graph
     Common::ObjectPool<Gcn::Block> gcn_block_pool{64};
-    Gcn::CFG cfg{gcn_block_pool, program.ins_list};
+    Gcn::CFG cfg{gcn_block_pool, program.ins_list, code_data};
 
     // Structurize control flow graph and create program.
     program.syntax_list =

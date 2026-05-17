@@ -456,6 +456,12 @@ bool IsCfgBlockDominatedBy(const Shader::Gcn::Block* maybe_dominator,
             visited.push_back(block->branch_true);
             queue.push(block->branch_true);
         }
+        for (const auto& target : block->switch_targets) {
+            if (!std::ranges::contains(visited, target.block)) {
+                visited.push_back(target.block);
+                queue.push(target.block);
+            }
+        }
     }
 
     return true;

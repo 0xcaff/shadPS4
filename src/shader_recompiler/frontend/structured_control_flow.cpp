@@ -44,6 +44,7 @@ enum class StatementType {
     Identity,
     Not,
     Or,
+    ScalarRegEqual,
     SetVariable,
     Variable,
 };
@@ -71,6 +72,7 @@ struct FunctionTag {};
 struct Identity {};
 struct Not {};
 struct Or {};
+struct ScalarRegEqual {};
 struct SetVariable {};
 struct Variable {};
 
@@ -94,6 +96,8 @@ struct Statement : ListBaseHook {
     Statement(Not, Statement* op_, Statement* up_) : op{op_}, up{up_}, type{StatementType::Not} {}
     Statement(Or, Statement* op_a_, Statement* op_b_, Statement* up_)
         : op_a{op_a_}, op_b{op_b_}, up{up_}, type{StatementType::Or} {}
+    Statement(ScalarRegEqual, u32 reg_, u32 value_, Statement* up_)
+        : location{reg_}, id{value_}, up{up_}, type{StatementType::ScalarRegEqual} {}
     Statement(SetVariable, u32 id_, Statement* op_, Statement* up_)
         : op{op_}, id{id_}, up{up_}, type{StatementType::SetVariable} {}
     Statement(Variable, u32 id_, Statement* up_)
@@ -132,6 +136,8 @@ std::string DumpExpr(const Statement* stmt) {
         return fmt::format("!{}", DumpExpr(stmt->op));
     case StatementType::Or:
         return fmt::format("{} || {}", DumpExpr(stmt->op_a), DumpExpr(stmt->op_b));
+    case StatementType::ScalarRegEqual:
+        return fmt::format("s{} == {:#x}", stmt->location, stmt->id);
     case StatementType::Variable:
         return fmt::format("goto_L{}", stmt->id);
     default:
@@ -182,6 +188,7 @@ std::string DumpExpr(const Statement* stmt) {
         case StatementType::Identity:
         case StatementType::Not:
         case StatementType::Or:
+        case StatementType::ScalarRegEqual:
         case StatementType::Variable:
             UNREACHABLE_MSG("Statement can't be printed");
         }
@@ -402,6 +409,23 @@ private:
                 }
                 break;
             }
+            case EndClass::Switch: {
+                ASSERT(!block.switch_targets.empty());
+                for (const auto& target : block.switch_targets) {
+                    const Node target_label{local_labels.at(target.block)};
+                    Statement* const cond{
+                        pool.Create(ScalarRegEqual{}, block.switch_reg, target.pc, &root_stmt)};
+                    gotos.push_back(
+                        root.insert(ip, *pool.Create(Goto{}, cond, target_label, &root_stmt)));
+                }
+
+                const Node default_label{local_labels.at(block.switch_targets.front().block)};
+                Statement* const always_cond{
+                    pool.Create(Identity{}, IR::Condition::True, &root_stmt)};
+                gotos.push_back(
+                    root.insert(ip, *pool.Create(Goto{}, always_cond, default_label, &root_stmt)));
+                break;
+            }
             case EndClass::Exit:
                 root.insert(ip, *pool.Create(Return{}, &root_stmt));
                 break;
@@ -581,6 +605,8 @@ private:
         return ir.LogicalNot(IR::U1{VisitExpr(ir, *stmt.op)});
     case StatementType::Or:
         return ir.LogicalOr(VisitExpr(ir, *stmt.op_a), VisitExpr(ir, *stmt.op_b));
+    case StatementType::ScalarRegEqual:
+        return ir.IEqual(ir.GetScalarReg(IR::ScalarReg(stmt.location)), ir.Imm32(stmt.id));
     case StatementType::Variable:
         return ir.GetGotoVariable(stmt.id);
     default:
