@@ -26,7 +26,7 @@ struct Archive;
 namespace Shader {
 
 constexpr u32 GdsOrderedTicketOffset = 0x10000;
-constexpr u32 GdsOrderedCounters = 4;
+constexpr u32 GdsOrderedCounters = 64;
 
 enum class Qualifier : u8 {
     None,
@@ -128,7 +128,7 @@ struct Info : InfoPersistent {
     bool uses_group_quad{};
     bool uses_group_shuffle{};
     bool uses_group_ballot{};
-    u32 ordered_count_counters{};
+    u64 ordered_count_counters{};
     IR::Type shared_types{};
     bool uses_fp16{};
     bool uses_fp64{};

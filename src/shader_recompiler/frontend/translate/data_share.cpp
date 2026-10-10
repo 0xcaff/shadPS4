@@ -400,7 +400,7 @@ void Translator::DS_ORDERED_COUNT(const GcnInst& inst) {
     const u32 counter_index = (u32(inst.control.ds.offset0) >> 2u) & (GdsOrderedCounters - 1);
     const bool is_release = (u32(inst.control.ds.offset1) & 0x1u) != 0;
     const bool is_swap = (u32(inst.control.ds.offset1) & 0x10u) != 0;
-    info.ordered_count_counters |= 1u << counter_index;
+    info.ordered_count_counters |= u64{1} << counter_index;
     const IR::U32 base = ir.BitFieldExtract(ir.GetM0(), ir.Imm32(16), ir.Imm32(16));
     const IR::U32 gds_offset = ir.IAdd(base, ir.Imm32(counter_index * 4u));
     const IR::U32 value{GetSrc(inst.src[0])};

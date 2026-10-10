@@ -667,8 +667,11 @@ Id EmitBufferOrderedCount(EmitContext& ctx, IR::Inst* inst, u32 handle, Id addre
                               : ctx.OpAtomicIAdd(ctx.U32[1], counter, scope, semantics, value);
     ctx.OpAtomicStore(result_word, workgroup, relaxed, result);
     if (is_release) {
-        ctx.OpAtomicOr(ctx.U32[1], ctx.OrderedWaveWord(local_wave, OrderedCountWord::Released),
-                       workgroup, relaxed, ctx.ConstU32(1u << counter_index));
+        const Id released_word = ctx.OrderedWaveWord(
+            local_wave,
+            ctx.ConstU32(static_cast<u32>(OrderedCountWord::Released) + counter_index / 32));
+        ctx.OpAtomicOr(ctx.U32[1], released_word, workgroup, relaxed,
+                       ctx.ConstU32(1u << (counter_index % 32)));
         PassTurn(ctx, ticket, wave);
     }
     ctx.OpAtomicUMax(ctx.U32[1], posted_word, workgroup,
@@ -717,16 +720,19 @@ void EmitBufferOrderedSignal(EmitContext& ctx, u32 handle, Id wave) {
     ctx.OpBranchConditional(is_last, pass_label, merge_label);
     ctx.AddLabel(pass_label);
     // The last lane of a wave passes on the turn of every counter the wave has not released.
-    const Id released =
-        ctx.OpAtomicLoad(ctx.U32[1], ctx.OrderedWaveWord(local_wave, OrderedCountWord::Released),
-                         workgroup, ctx.u32_zero_value);
     for (u32 counter_index = 0; counter_index < GdsOrderedCounters; ++counter_index) {
-        const u32 counter_bit = 1u << counter_index;
+        const u64 counter_bit = u64{1} << counter_index;
         if ((ctx.info.ordered_count_counters & counter_bit) == 0) {
             continue;
         }
+        const Id released_word = ctx.OrderedWaveWord(
+            local_wave,
+            ctx.ConstU32(static_cast<u32>(OrderedCountWord::Released) + counter_index / 32));
+        const Id released =
+            ctx.OpAtomicLoad(ctx.U32[1], released_word, workgroup, ctx.u32_zero_value);
         const Id unreleased = ctx.OpIEqual(
-            ctx.U1[1], ctx.OpBitwiseAnd(ctx.U32[1], released, ctx.ConstU32(counter_bit)),
+            ctx.U1[1],
+            ctx.OpBitwiseAnd(ctx.U32[1], released, ctx.ConstU32(1u << (counter_index % 32))),
             ctx.u32_zero_value);
         const Id release_label = ctx.OpLabel();
         const Id next_label = ctx.OpLabel();

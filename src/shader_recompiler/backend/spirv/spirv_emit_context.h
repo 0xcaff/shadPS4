@@ -19,6 +19,7 @@ using Sirit::Id;
 enum class OrderedCountWord : u32 {
     Posted,
     Released,
+    ReleasedHigh,
     Finished,
     Results,
 };
