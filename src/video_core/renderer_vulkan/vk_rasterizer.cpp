@@ -620,6 +620,14 @@ bool Rasterizer::IsComputeMetaClear(const Pipeline* pipeline) {
     // intended to be consumed and in such rare cases (e.g. HTile introspection, CRAA) we
     // will need its full emulation anyways.
     const auto& info = pipeline->GetStage(Shader::SwStage::Compute);
+    if (info.uses_dma ||
+        std::ranges::any_of(info.images, [](const auto& desc) { return desc.is_written; }) ||
+        std::ranges::any_of(info.buffers, [&](const auto& desc) {
+            return desc.is_written &&
+                   (desc.IsSpecial() || !texture_cache.IsMeta(desc.GetSharp(info).base_address));
+        })) {
+        return false;
+    }
 
     // Assume if a shader reads metadata, it is a copy shader.
     for (const auto& desc : info.buffers) {

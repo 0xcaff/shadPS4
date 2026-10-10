@@ -16,22 +16,26 @@ static bool IsDivergentCondition(const IR::U1& condition) {
         return false;
     }
     const IR::Inst* const condition_inst = condition.Inst();
-    return IR::BreadthFirstSearch(condition_inst,
-                                  [](const IR::Inst* inst) -> std::optional<bool> {
-                                      switch (inst->GetOpcode()) {
-                                      case IR::Opcode::LaneId:
-                                          return true;
-                                      case IR::Opcode::GetAttributeU32:
-                                          if (inst->Arg(0).Attribute() ==
-                                              IR::Attribute::LocalInvocationId) {
-                                              return true;
-                                          }
-                                          break;
-                                      default:
-                                          break;
-                                      }
-                                      return std::nullopt;
-                                  })
+    return IR::BreadthFirstSearch(
+               condition_inst,
+               [](const IR::Inst* inst) -> std::optional<bool> {
+                   switch (inst->GetOpcode()) {
+                   case IR::Opcode::LaneId:
+                   case IR::Opcode::Phi:
+                   case IR::Opcode::InverseBallot:
+                   case IR::Opcode::MaskedBitCount32:
+                       return true;
+                   case IR::Opcode::GetAttributeU32:
+                       if (inst->Arg(0).Attribute() == IR::Attribute::LocalInvocationId ||
+                           inst->Arg(0).Attribute() == IR::Attribute::LocalInvocationIndex) {
+                           return true;
+                       }
+                       break;
+                   default:
+                       break;
+                   }
+                   return std::nullopt;
+               })
         .value_or(false);
 }
 
@@ -132,12 +136,9 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
             } else if (inst.GetOpcode() == IR::Opcode::ReadLane && inst.Arg(1).IsImmediate()) {
                 push_worklist(inst);
             } else if (inst.GetOpcode() == IR::Opcode::Ballot) {
-                const auto is_unpack = [](const IR::Use& use) {
-                    return use.user->GetOpcode() == IR::Opcode::UnpackUint2x32;
-                };
-                if (std::ranges::any_of(inst.Uses(), is_unpack)) {
-                    push_worklist(inst);
-                }
+                push_worklist(inst);
+            } else if (inst.GetOpcode() == IR::Opcode::InverseBallot) {
+                worklist.push_back(&inst);
             } else if (inst.GetOpcode() == IR::Opcode::MaskedBitCount32) {
                 IR::Inst* const ballot = FindBallotForMaskedBitCount(inst);
                 if (ballot == nullptr ||
@@ -195,6 +196,11 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
                                               ir.ShiftLeftLogical(half, ir.Imm32(2u))))};
             ir.Barrier();
             inst->ReplaceUsesWithAndRemove(value);
+        } else if (inst->GetOpcode() == IR::Opcode::InverseBallot) {
+            const IR::U32 wave_lane = ir.BitwiseAnd(invocation_index, ir.Imm32(63));
+            const IR::U64 bit = ir.BitwiseAnd(
+                ir.ShiftRightLogical(IR::U64{inst->Arg(0)}, wave_lane), ir.Imm64(u64{1}));
+            inst->ReplaceUsesWithAndRemove(ir.INotEqual(bit, ir.Imm64(u64{0})));
         } else if (inst->GetOpcode() == IR::Opcode::MaskedBitCount32) {
             const IR::U32 subgroup_invocation_id = ir.BitwiseAnd(invocation_index, ir.Imm32(63));
             const IR::U64 mask = ir.ISub(

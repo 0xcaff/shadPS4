@@ -261,6 +261,16 @@ void Translator::EmitPrologue(IR::Block* first_block) {
                 ir.SetVectorReg(dst_vreg++, ir.Imm32(0));
             }
         }
+        if (addr_flags.pos_fixed_pt_ena) {
+            if (en_flags.pos_fixed_pt_ena) {
+                const IR::U32 x = ir.ConvertFToU(32, ir.GetAttribute(IR::Attribute::FragCoord, 0));
+                const IR::U32 y = ir.ConvertFToU(32, ir.GetAttribute(IR::Attribute::FragCoord, 1));
+                ir.SetVectorReg(dst_vreg++, ir.BitwiseOr(ir.BitwiseAnd(x, ir.Imm32(0xffff)),
+                                                         ir.ShiftLeftLogical(y, ir.Imm32(16))));
+            } else {
+                ir.SetVectorReg(dst_vreg++, ir.Imm32(0));
+            }
+        }
         break;
     }
     case SwStage::TessellationControl: {
