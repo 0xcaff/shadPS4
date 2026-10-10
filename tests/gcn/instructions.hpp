@@ -9,8 +9,11 @@ using OpcodeSOP1 = Shader::Gcn::OpcodeSOP1;
 using OpcodeSOP2 = Shader::Gcn::OpcodeSOP2;
 using OpcodeSOPK = Shader::Gcn::OpcodeSOPK;
 using OpcodeSOPC = Shader::Gcn::OpcodeSOPC;
+using OpcodeSOPP = Shader::Gcn::OpcodeSOPP;
+using OpcodeDS = Shader::Gcn::OpcodeDS;
 using OpcodeVOP1 = Shader::Gcn::OpcodeVOP1;
 using OpcodeVOP2 = Shader::Gcn::OpcodeVOP2;
+using OpcodeVOPC = Shader::Gcn::OpcodeVOPC;
 using OpcodeVOP3 = Shader::Gcn::OpcodeVOP3;
 using OpcodeVOP3P = Shader::Gcn::OpcodeVOP3P;
 
@@ -1164,6 +1167,72 @@ private:
     static_assert(sizeof(SOPCInternal) == sizeof(u32));
 };
 
+class SOPP {
+public:
+    explicit constexpr SOPP(OpcodeSOPP op, u16 simm16 = 0) {
+        i.simm16 = simm16;
+        i.op = std::to_underlying(op);
+        i.encoding = 0b101111111;
+    }
+
+    u32 Get() {
+        return std::bit_cast<u32>(i);
+    }
+
+private:
+    struct SOPPInternal {
+        u32 simm16 : 16;
+        u32 op : 7;
+        u32 encoding : 9;
+    } i;
+
+    static_assert(sizeof(SOPPInternal) == sizeof(u32));
+};
+
+class DS {
+public:
+    explicit constexpr DS(OpcodeDS op, VOperand8 vdst, VOperand8 addr,
+                          VOperand8 data0 = VOperand8::V0, VOperand8 data1 = VOperand8::V0) {
+        i.addr = std::to_underlying(addr);
+        i.data0 = std::to_underlying(data0);
+        i.data1 = std::to_underlying(data1);
+        i.vdst = std::to_underlying(vdst);
+        i.op = std::to_underlying(op);
+        i.encoding = 0b110110;
+    }
+
+    DS& SetOffsets(u8 offset0, u8 offset1) {
+        i.offset0 = offset0;
+        i.offset1 = offset1;
+        return *this;
+    }
+
+    DS& SetGds(bool gds) {
+        i.gds = gds;
+        return *this;
+    }
+
+    u64 Get() {
+        return std::bit_cast<u64>(i);
+    }
+
+private:
+    struct DSInternal {
+        u64 offset0 : 8;
+        u64 offset1 : 8;
+        u64 : 1;
+        u64 gds : 1;
+        u64 op : 8;
+        u64 encoding : 6;
+        u64 addr : 8;
+        u64 data0 : 8;
+        u64 data1 : 8;
+        u64 vdst : 8;
+    } i{};
+
+    static_assert(sizeof(DSInternal) == sizeof(u64));
+};
+
 class VOP1 {
 public:
     explicit constexpr VOP1(OpcodeVOP1 op, VOperand8 vdst, SOperand9 src0) {
@@ -1212,6 +1281,30 @@ private:
     } i;
 
     static_assert(sizeof(VOP2Internal) == sizeof(u32));
+};
+
+class VOPC {
+public:
+    explicit constexpr VOPC(OpcodeVOPC op, SOperand9 src0, VOperand8 vsrc1) {
+        i.src0 = std::to_underlying(src0);
+        i.vsrc1 = std::to_underlying(vsrc1);
+        i.op = std::to_underlying(op);
+        i.encoding = 0b0111110;
+    }
+
+    u32 Get() {
+        return std::bit_cast<u32>(i);
+    }
+
+private:
+    struct VOPCInternal {
+        u32 src0 : 9;
+        u32 vsrc1 : 8;
+        u32 op : 8;
+        u32 encoding : 7;
+    } i;
+
+    static_assert(sizeof(VOPCInternal) == sizeof(u32));
 };
 
 enum class Omod : u8 {

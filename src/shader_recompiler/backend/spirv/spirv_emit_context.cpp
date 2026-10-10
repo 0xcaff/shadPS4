@@ -13,11 +13,18 @@
 #include <fmt/format.h>
 #include <spirv/unified1/spirv.hpp11>
 
+#include <algorithm>
+#include <bit>
 #include <numbers>
 #include <string_view>
 
 namespace Shader::Backend::SPIRV {
 namespace {
+
+u32 NumComputeThreads(const RuntimeInfo& runtime_info) {
+    const auto [size_x, size_y, size_z] = runtime_info.hw.cs.workgroup_size;
+    return std::max(size_x * size_y * size_z, 1u);
+}
 
 std::string_view StageName(HwStage stage) {
     switch (stage) {
@@ -309,6 +316,84 @@ void EmitContext::DefineWorkgroupIndex() {
     Name(workgroup_index_id, "workgroup_index");
 }
 
+void EmitContext::ResetOrderedCountState() {
+    const Id local_wave{OrderedLocalWave()};
+    for (u32 word = 0; word < OrderedWaveWords(); ++word) {
+        OpStore(OrderedWaveWord(local_wave, ConstU32(word)), u32_zero_value);
+    }
+    OpStore(OrderedRoundWord(), u32_zero_value);
+    const Id workgroup_scope{ConstU32(static_cast<u32>(spv::Scope::Workgroup))};
+    OpControlBarrier(workgroup_scope, workgroup_scope,
+                     ConstU32(static_cast<u32>(spv::MemorySemanticsMask::AcquireRelease |
+                                               spv::MemorySemanticsMask::WorkgroupMemory)));
+}
+
+u32 EmitContext::OrderedSubgroupsPerWave() const {
+    return std::max(64u / std::max(profile.subgroup_size, 1u), 1u);
+}
+
+u32 EmitContext::OrderedWaveWords() const {
+    return OrderedCountFinishedLanes + 2 * OrderedSubgroupsPerWave();
+}
+
+void EmitContext::CountOrderedBarrier() {
+    OpStore(ordered_barriers, OpIAdd(U32[1], OpLoad(U32[1], ordered_barriers), u32_one_value));
+    const Id word{OrderedWaveWord(
+        OrderedLocalWave(),
+        OpIAdd(U32[1], ConstU32(OrderedCountFinishedLanes + OrderedSubgroupsPerWave()),
+               OrderedWaveSubgroup()))};
+    OpAtomicIAdd(U32[1], word, ConstU32(static_cast<u32>(spv::Scope::Workgroup)),
+                 ConstU32(static_cast<u32>(spv::MemorySemanticsMask::Release |
+                                           spv::MemorySemanticsMask::WorkgroupMemory)),
+                 u32_one_value);
+}
+
+Id EmitContext::OrderedLocalWave() {
+    return OpShiftRightLogical(U32[1], OpLoad(U32[1], local_invocation_index), ConstU32(6u));
+}
+
+Id EmitContext::OrderedHostSubgroup() {
+    const u32 subgroup_shift{
+        static_cast<u32>(std::countr_zero(std::max(profile.subgroup_size, 1u)))};
+    return OpShiftRightLogical(U32[1], OpLoad(U32[1], local_invocation_index),
+                               ConstU32(subgroup_shift));
+}
+
+Id EmitContext::OrderedWaveSubgroup() {
+    return OpBitwiseAnd(U32[1], OrderedHostSubgroup(), ConstU32(OrderedSubgroupsPerWave() - 1));
+}
+
+Id EmitContext::OrderedWaveLanes(Id local_wave) {
+    const u32 num_threads{NumComputeThreads(runtime_info)};
+    const u32 last_wave_lanes{num_threads % 64u};
+    if (last_wave_lanes == 0) {
+        return ConstU32(64u);
+    }
+    return OpSelect(U32[1], OpIEqual(U1[1], local_wave, ConstU32(num_threads / 64u)),
+                    ConstU32(last_wave_lanes), ConstU32(64u));
+}
+
+Id EmitContext::OrderedStateAccess(Id index) {
+    if (std::popcount(static_cast<u32>(info.shared_types)) > 1) {
+        return OpAccessChain(ordered_state_pointer, ordered_state, u32_zero_value, index);
+    }
+    return OpAccessChain(ordered_state_pointer, ordered_state, index);
+}
+
+Id EmitContext::OrderedWaveWord(Id local_wave, Id word) {
+    const Id wave_base{OpIMul(U32[1], local_wave, ConstU32(OrderedWaveWords()))};
+    const Id index{OpIAdd(U32[1], OpIAdd(U32[1], wave_base, word), ConstU32(ordered_state_base))};
+    return OrderedStateAccess(index);
+}
+
+Id EmitContext::OrderedWaveWord(Id local_wave, OrderedCountWord word) {
+    return OrderedWaveWord(local_wave, ConstU32(static_cast<u32>(word)));
+}
+
+Id EmitContext::OrderedRoundWord() {
+    return OrderedStateAccess(OpIAdd(U32[1], OrderedHostSubgroup(), ConstU32(ordered_rounds_base)));
+}
+
 void EmitContext::DefineInputs() {
     if (info.uses_lane_id) {
         subgroup_local_invocation_id = DefineVariable(
@@ -504,7 +589,7 @@ void EmitContext::DefineInputs() {
             local_invocation_id =
                 DefineVariable(U32[3], spv::BuiltIn::LocalInvocationId, spv::StorageClass::Input);
         }
-        if (info.loads.Get(IR::Attribute::LocalInvocationIndex)) {
+        if (info.loads.Get(IR::Attribute::LocalInvocationIndex) || info.uses_ordered_count) {
             local_invocation_index = DefineVariable(U32[1], spv::BuiltIn::LocalInvocationIndex,
                                                     spv::StorageClass::Input);
         }
@@ -1045,16 +1130,41 @@ void EmitContext::DefineImagesAndSamplers() {
 
 void EmitContext::DefineSharedMemory() {
     const auto num_types = std::popcount(static_cast<u32>(info.shared_types));
+    IR::Type shared_types = info.shared_types;
+    u32 shared_memory_size =
+        runtime_info.hw.cs.shared_memory_size + info.shared_memory_scratch_size;
+    if (info.uses_ordered_count) {
+        const u32 num_threads{NumComputeThreads(runtime_info)};
+        const u32 wave_words{Common::DivCeil(num_threads, 64u) * OrderedWaveWords()};
+        const u32 num_rounds{Common::DivCeil(num_threads, std::max(profile.subgroup_size, 1u))};
+        ordered_state_pointer = TypePointer(spv::StorageClass::Workgroup, U32[1]);
+        if (num_types > 1) {
+            shared_types |= IR::Type::U32;
+            ordered_state_base = Common::DivCeil(shared_memory_size, 4u);
+            shared_memory_size = (ordered_state_base + wave_words + num_rounds) * 4u;
+        } else {
+            const Id array_type{TypeArray(U32[1], ConstU32(wave_words + num_rounds))};
+            ordered_state = AddGlobalVariable(TypePointer(spv::StorageClass::Workgroup, array_type),
+                                              spv::StorageClass::Workgroup);
+            Name(ordered_state, "ordered_state");
+            interfaces.push_back(ordered_state);
+        }
+        ordered_rounds_base = ordered_state_base + wave_words;
+        if (OrderedSubgroupsPerWave() > 1) {
+            ordered_barriers = AddGlobalVariable(TypePointer(spv::StorageClass::Private, U32[1]),
+                                                 spv::StorageClass::Private, u32_zero_value);
+            Name(ordered_barriers, "ordered_barriers");
+            interfaces.push_back(ordered_barriers);
+        }
+    }
     if (num_types == 0) {
         return;
     }
     ASSERT(info.hw_stage == HwStage::Compute);
-    const u32 shared_memory_size =
-        runtime_info.hw.cs.shared_memory_size + info.shared_memory_scratch_size;
 
     const auto make_type = [&](IR::Type type, Id element_type, u32 element_size,
                                std::string_view name) {
-        if (False(info.shared_types & type)) {
+        if (False(shared_types & type)) {
             // Skip unused shared memory types.
             return std::make_tuple(Id{}, Id{}, Id{});
         }
@@ -1092,6 +1202,9 @@ void EmitContext::DefineSharedMemory() {
         make_type(IR::Type::U32, U32[1], 4u, "shared_mem_u32");
     std::tie(shared_memory_u64, shared_u64, shared_memory_u64_type) =
         make_type(IR::Type::U64, U64, 8u, "shared_mem_u64");
+    if (info.uses_ordered_count && num_types > 1) {
+        ordered_state = shared_memory_u32;
+    }
 }
 
 Id EmitContext::DefineFloat32ToUfloatM5(u32 mantissa_bits, const std::string_view name) {

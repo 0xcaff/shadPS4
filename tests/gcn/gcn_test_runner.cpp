@@ -278,19 +278,23 @@ std::expected<void, ErrorInfo> Runner::initialize() {
     fence_ = fence;
 
     // ---- Descriptor set layout with push-descriptor flag --------------
-    // Single storage buffer at binding 0. No descriptor sets are ever
-    // allocated from this layout — the layout is just used to tell the
-    // pipeline layout and shader what the push-descriptor shape is.
-    vk::DescriptorSetLayoutBinding dsl_binding{
-        .binding = 0,
-        .descriptorType = vk::DescriptorType::eStorageBuffer,
-        .descriptorCount = 1,
-        .stageFlags = vk::ShaderStageFlagBits::eCompute,
-    };
+    // Storage buffers at binding 0 (output), binding 1 (flat buffer with the
+    // user data) and binding 2 (GDS). No descriptor sets are ever allocated
+    // from this layout — the layout is just used to tell the pipeline layout
+    // and shader what the push-descriptor shape is.
+    std::array<vk::DescriptorSetLayoutBinding, 3> dsl_bindings{};
+    for (std::uint32_t i = 0; i < dsl_bindings.size(); ++i) {
+        dsl_bindings[i] = {
+            .binding = i,
+            .descriptorType = vk::DescriptorType::eStorageBuffer,
+            .descriptorCount = 1,
+            .stageFlags = vk::ShaderStageFlagBits::eCompute,
+        };
+    }
     auto [dslr, dsl] = device_.createDescriptorSetLayout({
         .flags = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR,
-        .bindingCount = 1,
-        .pBindings = &dsl_binding,
+        .bindingCount = static_cast<std::uint32_t>(dsl_bindings.size()),
+        .pBindings = dsl_bindings.data(),
     });
     if (dslr != vk::Result::eSuccess)
         return make_error(Error::DeviceCreationFailed, "createDescriptorSetLayout");
@@ -317,7 +321,8 @@ std::expected<void, ErrorInfo> Runner::initialize() {
 
 std::expected<void, ErrorInfo> Runner::run_raw(std::span<const std::uint32_t> spirv,
                                                std::span<const std::byte> push_constants,
-                                               std::span<std::byte> output, DispatchSize dispatch) {
+                                               std::span<std::byte> output, DispatchSize dispatch,
+                                               std::span<std::byte> gds) {
     if (push_constants.size() > max_push_constant_size_)
         return make_error(Error::PushConstantTooLarge,
                           std::format("push constants {} exceed device max {}",
@@ -332,6 +337,27 @@ std::expected<void, ErrorInfo> Runner::run_raw(std::span<const std::uint32_t> sp
         return std::unexpected(buf_r.error());
     auto& output_buffer = *buf_r;
     std::memset(output_buffer->mapped, 0, output.size());
+
+    const std::size_t flatbuf_size =
+        std::max<std::size_t>(push_constants.size(), 4 * sizeof(std::uint32_t));
+    auto flatbuf_r = create_host_buffer(device_, physical_device_, flatbuf_size,
+                                        vk::BufferUsageFlagBits::eStorageBuffer);
+    if (!flatbuf_r)
+        return std::unexpected(flatbuf_r.error());
+    auto& flatbuf = *flatbuf_r;
+    std::memset(flatbuf->mapped, 0, flatbuf_size);
+    if (!push_constants.empty())
+        std::memcpy(flatbuf->mapped, push_constants.data(), push_constants.size());
+
+    std::unique_ptr<HostBuffer> gds_buffer;
+    if (!gds.empty()) {
+        auto gds_r = create_host_buffer(device_, physical_device_, gds.size(),
+                                        vk::BufferUsageFlagBits::eStorageBuffer);
+        if (!gds_r)
+            return std::unexpected(gds_r.error());
+        gds_buffer = std::move(*gds_r);
+        std::memcpy(gds_buffer->mapped, gds.data(), gds.size());
+    }
 
     // Per-call: shader object --------------------------------------------
     vk::PushConstantRange shader_pc{
@@ -378,38 +404,32 @@ std::expected<void, ErrorInfo> Runner::run_raw(std::span<const std::uint32_t> sp
     vk::ShaderStageFlagBits stage = vk::ShaderStageFlagBits::eCompute;
     command_buffer_.bindShadersEXT(1, &stage, &shader);
 
-    // Push descriptor: binding 0 = output SSBO ---------------------------
-    vk::DescriptorBufferInfo dbi{
-        .buffer = output_buffer->buffer,
-        .offset = 0,
-        .range = VK_WHOLE_SIZE,
-    };
-    vk::WriteDescriptorSet write{
-        .dstBinding = 0,
-        .descriptorCount = 1,
-        .descriptorType = vk::DescriptorType::eStorageBuffer,
-        .pBufferInfo = &dbi,
-    };
+    // Push descriptors: binding 0 = output SSBO, binding 1 = flat buffer,
+    // binding 2 = GDS SSBO when the caller passes one ---------------------
+    const std::array<vk::DescriptorBufferInfo, 3> dbis{{
+        {.buffer = output_buffer->buffer, .offset = 0, .range = VK_WHOLE_SIZE},
+        {.buffer = flatbuf->buffer, .offset = 0, .range = VK_WHOLE_SIZE},
+        {.buffer = gds_buffer ? gds_buffer->buffer : vk::Buffer{},
+         .offset = 0,
+         .range = VK_WHOLE_SIZE},
+    }};
+    std::array<vk::WriteDescriptorSet, 3> writes{};
+    for (std::uint32_t i = 0; i < writes.size(); ++i) {
+        writes[i] = {
+            .dstBinding = i,
+            .descriptorCount = 1,
+            .descriptorType = vk::DescriptorType::eStorageBuffer,
+            .pBufferInfo = &dbis[i],
+        };
+    }
     vk::PushDescriptorSetInfoKHR push_desc{
         .stageFlags = vk::ShaderStageFlagBits::eCompute,
         .layout = pipeline_layout_,
         .set = 0,
-        .descriptorWriteCount = 1,
-        .pDescriptorWrites = &write,
+        .descriptorWriteCount = gds_buffer ? 3u : 2u,
+        .pDescriptorWrites = writes.data(),
     };
     command_buffer_.pushDescriptorSet2KHR(push_desc);
-
-    // Push constants -----------------------------------------------------
-    if (!push_constants.empty()) {
-        vk::PushConstantsInfoKHR pci{
-            .layout = pipeline_layout_,
-            .stageFlags = vk::ShaderStageFlagBits::eCompute,
-            .offset = 16, // fall onto ud_regs in PushData
-            .size = static_cast<std::uint32_t>(push_constants.size()),
-            .pValues = push_constants.data(),
-        };
-        command_buffer_.pushConstants2KHR(pci);
-    }
 
     command_buffer_.dispatch(dispatch.x, dispatch.y, dispatch.z);
 
@@ -433,6 +453,8 @@ std::expected<void, ErrorInfo> Runner::run_raw(std::span<const std::uint32_t> sp
         return make_error(Error::ExecutionFailed, "waitForFences");
 
     std::memcpy(output.data(), output_buffer->mapped, output.size());
+    if (gds_buffer)
+        std::memcpy(gds.data(), gds_buffer->mapped, gds.size());
     return {};
 }
 

@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <cmath>
+#include <span>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include <gtest/gtest.h>
 #include <half.hpp>
@@ -11,6 +13,7 @@
 
 #include "gcn_test_runner.hpp"
 #include "instructions.hpp"
+#include "shader_recompiler/info.h"
 #include "translator.hpp"
 
 class GcnTest : public ::testing::Test {
@@ -809,4 +812,360 @@ TEST_F(GcnTest, floor_f64_literal_is_high_dword) {
     ASSERT_TRUE(result_hi.has_value());
     EXPECT_EQ(*result_lo, 0U);
     EXPECT_EQ(*result_hi, 0xc0080000U);
+}
+
+TEST_F(GcnTest, tg_size_sgpr_holds_wave_count_and_order) {
+    auto runner = gcn_test::Runner::instance().value();
+    const std::array<u64, 1> instructions{
+        VOP1(OpcodeVOP1::V_MOV_B32, VOperand8::V0, SOperand9::S5).Get(),
+    };
+    const ComputeTestConfig config{
+        .workgroup_size = {128, 1, 1},
+        .tgid_enable = {true, false, false},
+        .tg_size_enable = true,
+        .ordered_append = true,
+        .store_per_invocation = true,
+    };
+    const auto spirv = TranslateToSpirv(instructions, config);
+
+    constexpr u32 NumGroups = 3;
+    const auto result = runner->run<std::array<u32, NumGroups * 128>>(
+        spirv, std::array{0U, 0U, 0U, 0U}, {NumGroups, 1, 1});
+    ASSERT_TRUE(result.has_value());
+    for (u32 group = 0; group < NumGroups; ++group) {
+        for (u32 thread = 0; thread < 128; ++thread) {
+            const u32 wave = thread / 64;
+            const u32 first_wave = wave == 0 ? 1U << 31 : 0U;
+            const u32 expected = first_wave | ((group * 2 + wave) << 6) | 2U;
+            EXPECT_EQ((*result)[group * 128 + thread], expected)
+                << "group " << group << " thread " << thread;
+        }
+    }
+}
+
+TEST_F(GcnTest, tg_size_sgpr_holds_wave_in_group_without_ordered_append) {
+    auto runner = gcn_test::Runner::instance().value();
+    const std::array<u64, 1> instructions{
+        VOP1(OpcodeVOP1::V_MOV_B32, VOperand8::V0, SOperand9::S5).Get(),
+    };
+    const ComputeTestConfig config{
+        .workgroup_size = {128, 1, 1},
+        .tgid_enable = {true, false, false},
+        .tg_size_enable = true,
+        .store_per_invocation = true,
+    };
+    const auto spirv = TranslateToSpirv(instructions, config);
+
+    constexpr u32 NumGroups = 3;
+    const auto result = runner->run<std::array<u32, NumGroups * 128>>(
+        spirv, std::array{0U, 0U, 0U, 0U}, {NumGroups, 1, 1});
+    ASSERT_TRUE(result.has_value());
+    for (u32 group = 0; group < NumGroups; ++group) {
+        for (u32 thread = 0; thread < 128; ++thread) {
+            const u32 wave = thread / 64;
+            const u32 first_wave = wave == 0 ? 1U << 31 : 0U;
+            const u32 expected = first_wave | (wave << 6) | 2U;
+            EXPECT_EQ((*result)[group * 128 + thread], expected)
+                << "group " << group << " thread " << thread;
+        }
+    }
+}
+
+constexpr u32 GdsTicketDword = Shader::GdsOrderedTicketOffset / 4;
+
+std::vector<u32> MakeGds() {
+    return std::vector<u32>(GdsTicketDword + Shader::GdsOrderedCounters);
+}
+
+u64 OrderedCount(VOperand8 vdst, VOperand8 value, u32 counter, bool release, bool done,
+                 bool swap = false) {
+    const u32 offset1 = (release ? 0x1U : 0U) | (done ? 0x2U : 0U) | (swap ? 0x10U : 0U);
+    return DS(OpcodeDS::DS_ORDERED_COUNT, vdst, value)
+        .SetOffsets(static_cast<u8>(counter << 2), static_cast<u8>(offset1))
+        .SetGds(true)
+        .Get();
+}
+
+TEST_F(GcnTest, ds_ordered_count_add_returns_previous_value) {
+    auto runner = gcn_test::Runner::instance().value();
+    const std::array<u64, 2> instructions{
+        SOP1(OpcodeSOP1::S_MOV_B32, SOperand7::M0, SOperand8::Const0).Get(),
+        OrderedCount(VOperand8::V0, VOperand8::V1, 1, true, true),
+    };
+    auto gds = MakeGds();
+    gds[1] = 7;
+
+    const auto result = runner->run<u32>(TranslateToSpirv(instructions),
+                                         std::array{0xdeadbeefU, 5U, 0U, 0U}, {},
+                                         std::as_writable_bytes(std::span{gds}));
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, 7U);
+    EXPECT_EQ(gds[1], 12U);
+    EXPECT_EQ(gds[GdsTicketDword], 0U);
+    EXPECT_EQ(gds[GdsTicketDword + 1], 1U);
+}
+
+TEST_F(GcnTest, ds_ordered_count_swap_returns_previous_value) {
+    auto runner = gcn_test::Runner::instance().value();
+    const std::array<u64, 2> instructions{
+        SOP1(OpcodeSOP1::S_MOV_B32, SOperand7::M0, SOperand8::Const0).Get(),
+        OrderedCount(VOperand8::V0, VOperand8::V1, 2, true, true, true),
+    };
+    auto gds = MakeGds();
+    gds[2] = 7;
+
+    const auto result = runner->run<u32>(TranslateToSpirv(instructions),
+                                         std::array{0xdeadbeefU, 5U, 0U, 0U}, {},
+                                         std::as_writable_bytes(std::span{gds}));
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, 7U);
+    EXPECT_EQ(gds[2], 5U);
+}
+
+TEST_F(GcnTest, ds_ordered_count_runs_waves_in_order) {
+    auto runner = gcn_test::Runner::instance().value();
+    const std::array<u64, 2> instructions{
+        SOP1(OpcodeSOP1::S_MOV_B32, SOperand7::M0, SOperand8::Const0).Get(),
+        OrderedCount(VOperand8::V0, VOperand8::V1, 0, true, true),
+    };
+    const ComputeTestConfig config{.store_per_invocation = true};
+    auto gds = MakeGds();
+
+    constexpr u32 NumGroups = 64;
+    const auto result = runner->run<std::array<u32, NumGroups>>(
+        TranslateToSpirv(instructions, config), std::array{0U, 3U, 0U, 0U}, {NumGroups, 1, 1},
+        std::as_writable_bytes(std::span{gds}));
+    ASSERT_TRUE(result.has_value());
+    for (u32 group = 0; group < NumGroups; ++group) {
+        EXPECT_EQ((*result)[group], group * 3) << "group " << group;
+    }
+    EXPECT_EQ(gds[0], NumGroups * 3);
+    EXPECT_EQ(gds[GdsTicketDword], NumGroups);
+}
+
+TEST_F(GcnTest, ds_ordered_count_runs_once_per_wave) {
+    auto runner = gcn_test::Runner::instance().value();
+    const std::array<u64, 2> instructions{
+        SOP1(OpcodeSOP1::S_MOV_B32, SOperand7::M0, SOperand8::Const0).Get(),
+        OrderedCount(VOperand8::V0, VOperand8::V1, 0, true, true),
+    };
+    const ComputeTestConfig config{
+        .workgroup_size = {128, 1, 1},
+        .store_per_invocation = true,
+    };
+    auto gds = MakeGds();
+
+    constexpr u32 NumGroups = 4;
+    const auto result = runner->run<std::array<u32, NumGroups * 128>>(
+        TranslateToSpirv(instructions, config), std::array{0U, 1U, 0U, 0U}, {NumGroups, 1, 1},
+        std::as_writable_bytes(std::span{gds}));
+    ASSERT_TRUE(result.has_value());
+    for (u32 group = 0; group < NumGroups; ++group) {
+        for (u32 thread = 0; thread < 128; ++thread) {
+            EXPECT_EQ((*result)[group * 128 + thread], group * 2 + thread / 64)
+                << "group " << group << " thread " << thread;
+        }
+    }
+    EXPECT_EQ(gds[0], NumGroups * 2);
+    EXPECT_EQ(gds[GdsTicketDword], NumGroups * 2);
+}
+
+TEST_F(GcnTest, ds_ordered_count_passes_turn_at_end_of_program) {
+    auto runner = gcn_test::Runner::instance().value();
+    const std::array<u64, 3> instructions{
+        SOP1(OpcodeSOP1::S_MOV_B32, SOperand7::M0, SOperand8::Const0).Get(),
+        OrderedCount(VOperand8::V0, VOperand8::V1, 0, false, false),
+        SOPP(OpcodeSOPP::S_ENDPGM).Get(),
+    };
+    const ComputeTestConfig config{
+        .workgroup_size = {96, 1, 1},
+        .store_per_invocation = true,
+    };
+    auto gds = MakeGds();
+
+    constexpr u32 NumGroups = 4;
+    const auto result = runner->run<std::array<u32, NumGroups * 96>>(
+        TranslateToSpirv(instructions, config), std::array{0U, 1U, 0U, 0U}, {NumGroups, 1, 1},
+        std::as_writable_bytes(std::span{gds}));
+    ASSERT_TRUE(result.has_value());
+    for (u32 group = 0; group < NumGroups; ++group) {
+        for (u32 thread = 0; thread < 96; ++thread) {
+            EXPECT_EQ((*result)[group * 96 + thread], group * 2 + thread / 64)
+                << "group " << group << " thread " << thread;
+        }
+    }
+    EXPECT_EQ(gds[0], NumGroups * 2);
+    EXPECT_EQ(gds[GdsTicketDword], NumGroups * 2);
+}
+
+TEST_F(GcnTest, ds_ordered_count_orders_each_counter) {
+    auto runner = gcn_test::Runner::instance().value();
+    const std::array<u64, 3> instructions{
+        SOP1(OpcodeSOP1::S_MOV_B32, SOperand7::M0, SOperand8::Const0).Get(),
+        OrderedCount(VOperand8::V2, VOperand8::V1, 0, true, false),
+        OrderedCount(VOperand8::V0, VOperand8::V2, 1, true, true),
+    };
+    const ComputeTestConfig config{
+        .workgroup_size = {128, 1, 1},
+        .store_per_invocation = true,
+    };
+    auto gds = MakeGds();
+
+    constexpr u32 NumGroups = 16;
+    constexpr u32 NumWaves = NumGroups * 2;
+    const auto result = runner->run<std::array<u32, NumGroups * 128>>(
+        TranslateToSpirv(instructions, config), std::array{0U, 1U, 0U, 0U}, {NumGroups, 1, 1},
+        std::as_writable_bytes(std::span{gds}));
+    ASSERT_TRUE(result.has_value());
+    for (u32 group = 0; group < NumGroups; ++group) {
+        for (u32 thread = 0; thread < 128; ++thread) {
+            const u32 wave = group * 2 + thread / 64;
+            EXPECT_EQ((*result)[group * 128 + thread], wave * (wave - 1) / 2)
+                << "group " << group << " thread " << thread;
+        }
+    }
+    EXPECT_EQ(gds[0], NumWaves);
+    EXPECT_EQ(gds[1], NumWaves * (NumWaves - 1) / 2);
+    EXPECT_EQ(gds[GdsTicketDword], NumWaves);
+    EXPECT_EQ(gds[GdsTicketDword + 1], NumWaves);
+}
+
+// The second wave of a group must pass op 1 before the barrier, while the first wave has only
+// done op 1: the release on op 1 passes that counter's turn on.
+TEST_F(GcnTest, ds_ordered_count_passes_turn_at_release) {
+    auto runner = gcn_test::Runner::instance().value();
+    const std::array<u64, 4> instructions{
+        SOP1(OpcodeSOP1::S_MOV_B32, SOperand7::M0, SOperand8::Const0).Get(),
+        OrderedCount(VOperand8::V2, VOperand8::V1, 0, true, false),
+        SOPP(OpcodeSOPP::S_BARRIER).Get(),
+        OrderedCount(VOperand8::V0, VOperand8::V2, 1, true, true),
+    };
+    const ComputeTestConfig config{
+        .workgroup_size = {128, 1, 1},
+        .store_per_invocation = true,
+    };
+    auto gds = MakeGds();
+
+    constexpr u32 NumGroups = 16;
+    constexpr u32 NumWaves = NumGroups * 2;
+    const auto result = runner->run<std::array<u32, NumGroups * 128>>(
+        TranslateToSpirv(instructions, config), std::array{0U, 1U, 0U, 0U}, {NumGroups, 1, 1},
+        std::as_writable_bytes(std::span{gds}));
+    ASSERT_TRUE(result.has_value());
+    for (u32 group = 0; group < NumGroups; ++group) {
+        for (u32 thread = 0; thread < 128; ++thread) {
+            const u32 wave = group * 2 + thread / 64;
+            EXPECT_EQ((*result)[group * 128 + thread], wave * (wave - 1) / 2)
+                << "group " << group << " thread " << thread;
+        }
+    }
+    EXPECT_EQ(gds[0], NumWaves);
+    EXPECT_EQ(gds[1], NumWaves * (NumWaves - 1) / 2);
+    EXPECT_EQ(gds[GdsTicketDword], NumWaves);
+    EXPECT_EQ(gds[GdsTicketDword + 1], NumWaves);
+}
+
+// Each lane passes its index + 1. The value of the wave's first active lane is added, also when
+// the host runs the wave as more than one subgroup. The 1 comes from the user data: the runner
+// binds the GDS buffer at binding 2, after the user data, so the shader has to read the user data.
+TEST_F(GcnTest, ds_ordered_count_adds_first_active_lane_value) {
+    auto runner = gcn_test::Runner::instance().value();
+    const std::array<u64, 3> instructions{
+        SOP1(OpcodeSOP1::S_MOV_B32, SOperand7::M0, SOperand8::Const0).Get(),
+        VOP2(OpcodeVOP2::V_ADD_I32, VOperand8::V1, SOperand9::S1, VOperand8::V4).Get(),
+        OrderedCount(VOperand8::V0, VOperand8::V1, 0, true, true),
+    };
+    const ComputeTestConfig config{
+        .workgroup_size = {64, 1, 1},
+        .store_per_invocation = true,
+        .local_index_in_v4 = true,
+    };
+    auto gds = MakeGds();
+
+    constexpr u32 NumGroups = 16;
+    const auto result = runner->run<std::array<u32, NumGroups * 64>>(
+        TranslateToSpirv(instructions, config), std::array{0U, 1U, 0U, 0U}, {NumGroups, 1, 1},
+        std::as_writable_bytes(std::span{gds}));
+    ASSERT_TRUE(result.has_value());
+    for (u32 group = 0; group < NumGroups; ++group) {
+        for (u32 thread = 0; thread < 64; ++thread) {
+            EXPECT_EQ((*result)[group * 64 + thread], group)
+                << "group " << group << " thread " << thread;
+        }
+    }
+    EXPECT_EQ(gds[0], NumGroups);
+    EXPECT_EQ(gds[GdsTicketDword], NumGroups);
+}
+
+// v_cmpx leaves exec set for lanes 5-20 (lane - 5 < 16, unsigned). v_readfirstlane then reads the
+// first of them, lane 5, whose v1 is 6, and every lane gets that value.
+TEST_F(GcnTest, readfirstlane_reads_first_lane_with_exec_bit) {
+    auto runner = gcn_test::Runner::instance().value();
+    const std::array<u64, 5> instructions{
+        VOP2(OpcodeVOP2::V_ADD_I32, VOperand8::V1, SOperand9::Const1, VOperand8::V4).Get(),
+        VOP2(OpcodeVOP2::V_ADD_I32, VOperand8::V2, SOperand9::ConstNeg5, VOperand8::V4).Get(),
+        VOPC(OpcodeVOPC::V_CMPX_GT_U32, SOperand9::Const16, VOperand8::V2).Get(),
+        VOP1(OpcodeVOP1::V_READFIRSTLANE_B32, VOperand8::V12, SOperand9::V1).Get(),
+        VOP1(OpcodeVOP1::V_MOV_B32, VOperand8::V0, SOperand9::S12).Get(),
+    };
+    const ComputeTestConfig config{
+        .workgroup_size = {32, 1, 1},
+        .store_per_invocation = true,
+        .local_index_in_v4 = true,
+    };
+    const auto result = runner->run<std::array<u32, 32>>(TranslateToSpirv(instructions, config),
+                                                         std::array{0U, 0U, 0U, 0U});
+    ASSERT_TRUE(result.has_value());
+    for (u32 lane = 0; lane < 32; ++lane) {
+        EXPECT_EQ((*result)[lane], 6U) << "lane " << lane;
+    }
+}
+
+// With no exec bit set v_readfirstlane reads lane 0.
+TEST_F(GcnTest, readfirstlane_reads_lane_0_without_exec_bits) {
+    auto runner = gcn_test::Runner::instance().value();
+    const std::array<u64, 4> instructions{
+        VOP2(OpcodeVOP2::V_ADD_I32, VOperand8::V1, SOperand9::Const1, VOperand8::V4).Get(),
+        VOPC(OpcodeVOPC::V_CMPX_GT_U32, SOperand9::Const0, VOperand8::V4).Get(),
+        VOP1(OpcodeVOP1::V_READFIRSTLANE_B32, VOperand8::V12, SOperand9::V1).Get(),
+        VOP1(OpcodeVOP1::V_MOV_B32, VOperand8::V0, SOperand9::S12).Get(),
+    };
+    const ComputeTestConfig config{
+        .workgroup_size = {32, 1, 1},
+        .store_per_invocation = true,
+        .local_index_in_v4 = true,
+    };
+    const auto result = runner->run<std::array<u32, 32>>(TranslateToSpirv(instructions, config),
+                                                         std::array{0U, 0U, 0U, 0U});
+    ASSERT_TRUE(result.has_value());
+    for (u32 lane = 0; lane < 32; ++lane) {
+        EXPECT_EQ((*result)[lane], 1U) << "lane " << lane;
+    }
+}
+
+// v_writelane sets one lane of v1 and every other lane keeps its value. v1 = lane + 1, then lane 2
+// takes -15 = 0xfffffff1 (VOP3 form, constant lane select) and lane 31 takes s1 (VOP2 form: the
+// lane select is an SGPR, s2, in the vsrc1 field).
+TEST_F(GcnTest, writelane_sets_selected_lane_and_keeps_other_lanes) {
+    auto runner = gcn_test::Runner::instance().value();
+    const std::array<u64, 5> instructions{
+        VOP2(OpcodeVOP2::V_ADD_I32, VOperand8::V1, SOperand9::Const1, VOperand8::V4).Get(),
+        VOP3A(OpcodeVOP3::V_WRITELANE_B32, VOperand8::V1, SOperand9::ConstNeg15, SOperand9::Const2)
+            .Get(),
+        SOP1(OpcodeSOP1::S_MOV_B32, SOperand7::S2, SOperand8::Const31).Get(),
+        VOP2(OpcodeVOP2::V_WRITELANE_B32, VOperand8::V1, SOperand9::S1, VOperand8::V2).Get(),
+        VOP1(OpcodeVOP1::V_MOV_B32, VOperand8::V0, SOperand9::V1).Get(),
+    };
+    const ComputeTestConfig config{
+        .workgroup_size = {32, 1, 1},
+        .store_per_invocation = true,
+        .local_index_in_v4 = true,
+    };
+    const auto result = runner->run<std::array<u32, 32>>(TranslateToSpirv(instructions, config),
+                                                         std::array{0U, 0xc0de0031U, 0U, 0U});
+    ASSERT_TRUE(result.has_value());
+    for (u32 lane = 0; lane < 32; ++lane) {
+        const u32 expected = lane == 2 ? 0xfffffff1U : lane == 31 ? 0xc0de0031U : lane + 1;
+        EXPECT_EQ((*result)[lane], expected) << "lane " << lane;
+    }
 }

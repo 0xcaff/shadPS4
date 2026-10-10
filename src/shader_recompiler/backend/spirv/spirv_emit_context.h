@@ -16,6 +16,19 @@ namespace Shader::Backend::SPIRV {
 
 using Sirit::Id;
 
+enum class OrderedCountWord : u32 {
+    Posted,
+    Released,
+    Finished,
+    Results,
+};
+
+constexpr u32 OrderedCountResults = 4;
+// After the results come two words per host subgroup of the wave: the number of its lanes that
+// have ended, then the number of barriers its lanes have reached.
+constexpr u32 OrderedCountFinishedLanes =
+    static_cast<u32>(OrderedCountWord::Results) + OrderedCountResults;
+
 struct VectorIds {
     [[nodiscard]] Id& operator[](u32 index) {
         return ids[index - 1];
@@ -47,6 +60,16 @@ public:
     void DefineBufferProperties();
     void DefineAmdPerVertexAttribs();
     void DefineWorkgroupIndex();
+    void ResetOrderedCountState();
+    void CountOrderedBarrier();
+
+    u32 OrderedSubgroupsPerWave() const;
+    Id OrderedLocalWave();
+    Id OrderedWaveSubgroup();
+    Id OrderedWaveLanes(Id local_wave);
+    Id OrderedWaveWord(Id local_wave, Id word);
+    Id OrderedWaveWord(Id local_wave, OrderedCountWord word);
+    Id OrderedRoundWord();
 
     [[nodiscard]] Id DefineInput(Id type, std::optional<u32> location = std::nullopt,
                                  std::optional<spv::BuiltIn> builtin = std::nullopt) {
@@ -291,6 +314,12 @@ public:
     Id shared_memory_u32_type{};
     Id shared_memory_u64_type{};
 
+    Id ordered_state{};
+    Id ordered_state_pointer{};
+    Id ordered_barriers{};
+    u32 ordered_state_base{};
+    u32 ordered_rounds_base{};
+
     Id bary_coord{};
     Id bary_coord_smooth{};
     Id bary_coord_smooth_centroid{};
@@ -404,6 +433,10 @@ private:
     void DefineImagesAndSamplers();
     void DefineSharedMemory();
     void DefineFunctions();
+
+    u32 OrderedWaveWords() const;
+    Id OrderedStateAccess(Id index);
+    Id OrderedHostSubgroup();
 
     SpirvAttribute GetAttributeInfo(AmdGpu::NumberFormat fmt, Id id, u32 num_components,
                                     bool output, bool loaded = false, bool array = false);

@@ -17,6 +17,9 @@ void MemoryBarrier(EmitContext& ctx, spv::Scope scope) {
 } // Anonymous namespace
 
 void EmitBarrier(EmitContext& ctx) {
+    if (ctx.info.uses_ordered_count && ctx.OrderedSubgroupsPerWave() > 1) {
+        ctx.CountOrderedBarrier();
+    }
     const auto execution{spv::Scope::Workgroup};
     spv::Scope memory;
     spv::MemorySemanticsMask memory_semantics;

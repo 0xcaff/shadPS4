@@ -233,6 +233,9 @@ const Shader::RuntimeInfo& PipelineCache::BuildRuntimeInfo(HwStage stage, SwStag
                                      cs_pgm.num_thread_z.full};
         info.hw.cs.tgid_enable = {cs_pgm.IsTgidEnabled(0), cs_pgm.IsTgidEnabled(1),
                                   cs_pgm.IsTgidEnabled(2)};
+        info.hw.cs.tg_size_enable = cs_pgm.IsTgSizeEnabled();
+        // Only TG_SIZE depends on ordered append.
+        info.hw.cs.ordered_append = cs_pgm.IsTgSizeEnabled() && cs_pgm.IsOrderedAppendEnabled();
         info.hw.cs.shared_memory_size = cs_pgm.SharedMemSize();
         break;
     }

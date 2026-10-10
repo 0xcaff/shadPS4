@@ -76,6 +76,8 @@ void Translator::EmitDataShare(const GcnInst& inst) {
         return DS_CONSUME(inst);
     case Opcode::DS_APPEND:
         return DS_APPEND(inst);
+    case Opcode::DS_ORDERED_COUNT:
+        return DS_ORDERED_COUNT(inst);
     case Opcode::DS_WRITE_B16:
         return DS_WRITE(16, false, false, false, inst);
     case Opcode::DS_WRITE_B64:
@@ -99,7 +101,7 @@ void Translator::EmitDataShare(const GcnInst& inst) {
 
 void Translator::V_READFIRSTLANE_B32(const GcnInst& inst) {
     const IR::U32 value{GetSrc(inst.src[0])};
-    SetDst(inst.dst[0], ir.ReadFirstLane(value));
+    SetDst(inst.dst[0], ir.ReadFirstLane(value, ir.GetExec()));
 }
 
 void Translator::V_READLANE_B32(const GcnInst& inst) {
@@ -347,6 +349,25 @@ void Translator::DS_CONSUME(const GcnInst& inst) {
     const IR::U32 base = ir.BitFieldExtract(ir.GetM0(), ir.Imm32(16), ir.Imm32(16));
     const IR::U32 gds_offset = ir.IAdd(base, ir.Imm32(inst_offset));
     const IR::U32 prev = ir.DataConsume(ir.ShiftRightLogical(gds_offset, ir.Imm32(2u)));
+    SetDst(inst.dst[0], prev);
+}
+
+void Translator::DS_ORDERED_COUNT(const GcnInst& inst) {
+    if (!info.uses_ordered_count) {
+        LogMissingOpcode(inst);
+        return;
+    }
+    // Each counter has its own turn, which an op with the release bit passes to the next wave in
+    // ordered-append order. The done bit changes nothing in that.
+    const u32 counter_index = (u32(inst.control.ds.offset0) >> 2u) & (GdsOrderedCounters - 1);
+    const bool is_release = (u32(inst.control.ds.offset1) & 0x1u) != 0;
+    const bool is_swap = (u32(inst.control.ds.offset1) & 0x10u) != 0;
+    info.ordered_count_counters |= 1u << counter_index;
+    const IR::U32 base = ir.BitFieldExtract(ir.GetM0(), ir.Imm32(16), ir.Imm32(16));
+    const IR::U32 gds_offset = ir.IAdd(base, ir.Imm32(counter_index * 4u));
+    const IR::U32 value{GetSrc(inst.src[0])};
+    const IR::U32 prev = ir.GdsOrderedCount(ir.ShiftRightLogical(gds_offset, ir.Imm32(2u)), value,
+                                            OrderedWaveIndex(), counter_index, is_swap, is_release);
     SetDst(inst.dst[0], prev);
 }
 

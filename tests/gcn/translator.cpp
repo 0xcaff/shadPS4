@@ -4,6 +4,7 @@
 #include "shader_recompiler/runtime_info.h"
 #include "translator.hpp"
 
+#include <algorithm>
 #include <iostream>
 
 #include "common/io_file.h"
@@ -24,17 +25,29 @@ using namespace Shader;
 
 namespace Shader::Optimization {
 void ResourceTrackingPassStub(IR::Program& program, const Profile& profile);
-}
+void OrderedCountPassStub(IR::Program& program);
+} // namespace Shader::Optimization
 
 std::vector<u32> TranslateToSpirv(u64 raw_gcn_inst) {
     return TranslateToSpirv(std::span<const u64>{&raw_gcn_inst, 1});
 }
 
 std::vector<u32> TranslateToSpirv(std::span<const u64> raw_gcn_insts) {
+    return TranslateToSpirv(raw_gcn_insts, ComputeTestConfig{});
+}
+
+std::vector<u32> TranslateToSpirv(std::span<const u64> raw_gcn_insts,
+                                  const ComputeTestConfig& config) {
     std::array<u32, 2> store{
         0xe0700000,
         0x80000000 // buffer_store_dword v0, v0, s[0:3], 0
     };
+    if (config.store_per_invocation) {
+        store = {
+            0xe0701000,
+            0x800000ff // buffer_store_dword v0, v255, s[0:3], 0 offen
+        };
+    }
     Gcn::GcnCodeSlice second(store.data(), store.data() + store.size());
 
     Gcn::GcnDecodeContext decoder;
@@ -54,6 +67,9 @@ std::vector<u32> TranslateToSpirv(std::span<const u64> raw_gcn_insts) {
     info.flattened_ud_buf.resize(4);
     AmdGpu::Buffer buf = AmdGpu::Buffer::Null();
     std::memcpy(info.flattened_ud_buf.data(), &buf, sizeof(buf));
+    info.uses_ordered_count = std::ranges::any_of(instructions, [](const Gcn::GcnInst& inst) {
+        return inst.opcode == Gcn::Opcode::DS_ORDERED_COUNT;
+    });
 
     IR::Program program{info};
     Pools pools{};
@@ -75,7 +91,10 @@ std::vector<u32> TranslateToSpirv(std::span<const u64> raw_gcn_insts) {
     RuntimeInfo runtime_info{};
     runtime_info.Initialize(HwStage::Compute, SwStage::Compute);
     runtime_info.props.num_user_data = 4;
-    runtime_info.hw.cs.workgroup_size = {1, 1, 1};
+    runtime_info.hw.cs.workgroup_size = config.workgroup_size;
+    runtime_info.hw.cs.tgid_enable = config.tgid_enable;
+    runtime_info.hw.cs.tg_size_enable = config.tg_size_enable;
+    runtime_info.hw.cs.ordered_append = config.ordered_append;
 
     Gcn::Translator translator(program.info, runtime_info, profile);
     translator.EmitPrologue(block);
@@ -90,8 +109,22 @@ std::vector<u32> TranslateToSpirv(std::span<const u64> raw_gcn_insts) {
         mov.dst[0].code = i;
         translator.S_MOV(mov);
     }
+    if (config.local_index_in_v4) {
+        IR::IREmitter ir{*block};
+        ir.SetVectorReg(IR::VectorReg::V4,
+                        ir.GetAttributeU32(IR::Attribute::LocalInvocationIndex));
+    }
     for (const Gcn::GcnInst& inst : instructions) {
         translator.TranslateInstruction(inst);
+    }
+    if (config.store_per_invocation) {
+        IR::IREmitter ir{*block};
+        const auto [size_x, size_y, size_z] = config.workgroup_size;
+        const IR::U32 group_base = ir.IMul(ir.GetAttributeU32(IR::Attribute::WorkgroupIndex),
+                                           ir.Imm32(size_x * size_y * size_z));
+        const IR::U32 invocation =
+            ir.IAdd(group_base, ir.GetAttributeU32(IR::Attribute::LocalInvocationIndex));
+        ir.SetVectorReg(IR::VectorReg::V255, ir.ShiftLeftLogical(invocation, ir.Imm32(2u)));
     }
     translator.TranslateInstruction(store_inst);
 
@@ -100,6 +133,7 @@ std::vector<u32> TranslateToSpirv(std::span<const u64> raw_gcn_insts) {
     Shader::Optimization::ConstantPropagationPass(program.blocks);
     Shader::Optimization::DeadCodeEliminationPass(program);
     Shader::Optimization::CollectShaderInfoPass(program, profile);
+    Shader::Optimization::OrderedCountPassStub(program);
 
     Backend::Bindings bindings{};
 

@@ -21,10 +21,14 @@ void Translator::EmitFlowControl(const GcnInst& inst) {
         return;
     case Opcode::S_GETPC_B64:
         return S_GETPC_B64(inst);
+    case Opcode::S_ENDPGM:
+        if (info.uses_ordered_count) {
+            ir.GdsOrderedSignal(OrderedWaveIndex());
+        }
+        return;
     case Opcode::S_SETPC_B64:
     case Opcode::S_WAITCNT:
     case Opcode::S_NOP:
-    case Opcode::S_ENDPGM:
     case Opcode::S_CBRANCH_EXECZ:
     case Opcode::S_CBRANCH_SCC0:
     case Opcode::S_CBRANCH_SCC1:

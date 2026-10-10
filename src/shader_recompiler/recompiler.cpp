@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include "common/logging/classes.h"
 #include "shader_recompiler/frontend/control_flow_graph.h"
 #include "shader_recompiler/frontend/decode.h"
@@ -77,6 +78,10 @@ IR::Program TranslateProgram(const std::span<const u32>& code, Pools& pools, Inf
     while (!slice.atEnd()) {
         program.ins_list.emplace_back(decoder.decodeInstruction(slice));
     }
+    info.uses_ordered_count = info.hw_stage == HwStage::Compute &&
+                              std::ranges::any_of(program.ins_list, [](const Gcn::GcnInst& inst) {
+                                  return inst.opcode == Gcn::Opcode::DS_ORDERED_COUNT;
+                              });
 
     // Clear any previous pooled data.
     pools.ReleaseContents();

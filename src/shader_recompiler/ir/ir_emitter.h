@@ -171,12 +171,23 @@ public:
 
     [[nodiscard]] U32 DataAppend(const U32& gds_dw_offset);
     [[nodiscard]] U32 DataConsume(const U32& gds_dw_offset);
+
+    static constexpr u32 OrderedCountSwap = 1u << 0;
+    static constexpr u32 OrderedCountRelease = 1u << 1;
+    static constexpr u32 OrderedCountCounterShift = 2;
+    [[nodiscard]] U32 GdsOrderedCount(const U32& gds_dw_offset, const U32& value, const U32& wave,
+                                      u32 counter, bool is_swap, bool is_release);
+    void GdsOrderedSignal(const U32& wave);
+    [[nodiscard]] U32 BufferOrderedCount(const Value& handle, const Value& address,
+                                         const U32& value, const U32& wave, u32 flags);
+    void BufferOrderedSignal(const Value& handle, const U32& wave);
+
     [[nodiscard]] U32 LaneId();
     [[nodiscard]] U32 WarpId();
     [[nodiscard]] U32 QuadBroadcast(const U32& value, const U32& index);
     [[nodiscard]] U32 Shuffle(const U32& value, const U32& index);
     [[nodiscard]] U32 ShuffleXor(const U32& value, const U32& mask);
-    [[nodiscard]] U32 ReadFirstLane(const U32& value);
+    [[nodiscard]] U32 ReadFirstLane(const U32& value, const U1& exec);
     [[nodiscard]] U32 ReadLane(const U32& value, const U32& lane);
     [[nodiscard]] U32 WriteLane(const U32& value, const U32& write_value, const U32& lane);
     [[nodiscard]] U64 Ballot(const U1& bit);

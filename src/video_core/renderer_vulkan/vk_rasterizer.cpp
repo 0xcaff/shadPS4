@@ -334,6 +334,7 @@ void Rasterizer::DispatchDirect() {
     if (!BindResources(pipeline)) {
         return;
     }
+    ResetOrderedCount(cs);
 
     if (needs_barrier) {
         runtime.FlushBarriers();
@@ -350,6 +351,17 @@ void Rasterizer::DispatchDirect() {
     ResetBindings(true);
 }
 
+void Rasterizer::ResetOrderedCount(const Shader::Info& stage) {
+    if (!stage.uses_ordered_count) {
+        return;
+    }
+    const auto* gds_buffer = buffer_cache.GetGdsBuffer();
+    constexpr u32 tickets_size = Shader::GdsOrderedCounters * sizeof(u32);
+    runtime.FillBuffer(gds_buffer, Shader::GdsOrderedTicketOffset, tickets_size, 0);
+    needs_barrier |=
+        runtime.IsBufferAccessed(gds_buffer, Shader::GdsOrderedTicketOffset, tickets_size);
+}
+
 void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
     RENDERER_TRACE;
 
@@ -364,6 +376,7 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
     if (!BindResources(pipeline)) {
         return;
     }
+    ResetOrderedCount(pipeline->GetStage(Shader::SwStage::Compute));
 
     const auto [buffer, base] = buffer_cache.ObtainBuffer(address + offset, size, false);
     needs_barrier |= runtime.IsBufferAccessed(buffer, base, size);

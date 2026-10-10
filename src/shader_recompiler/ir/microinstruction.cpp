@@ -82,6 +82,10 @@ bool Inst::MayHaveSideEffects() const noexcept {
     case Opcode::BufferAtomicSwap32:
     case Opcode::BufferAtomicCmpSwap32:
     case Opcode::BufferAtomicFCmpSwap32:
+    case Opcode::BufferOrderedCount:
+    case Opcode::BufferOrderedSignal:
+    case Opcode::GdsOrderedCount:
+    case Opcode::GdsOrderedSignal:
     case Opcode::WriteSharedU16:
     case Opcode::WriteSharedU32:
     case Opcode::WriteSharedU64:

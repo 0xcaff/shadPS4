@@ -182,23 +182,41 @@ void CFG::SplitDivergenceScopes() {
                inst.opcode == Opcode::S_CBRANCH_EXECZ || inst.opcode == Opcode::S_ENDPGM ||
                (inst.opcode == Opcode::S_ANDN2_B64 && inst.dst[0].field == OperandField::ExecLo);
     };
+    const auto is_split_scope = [](const GcnInst& inst) {
+        // These move a value between a lane of a VGPR and an SGPR whatever the exec mask: a read
+        // gives the SGPR to every lane of the wave, a write sets its lane even when that lane's
+        // exec bit is clear. Inside a divergence block only the lanes with their exec bit set would
+        // run them, so they end the block, run in every lane, and the scope goes on after them.
+        return inst.opcode == Opcode::V_READFIRSTLANE_B32 ||
+               inst.opcode == Opcode::V_READLANE_B32 || inst.opcode == Opcode::V_WRITELANE_B32;
+    };
 
+    // An epilogue block that starts inside a scope a split ended; its first instructions are still
+    // under the scope's exec mask.
+    const Block* reopen_block = nullptr;
     for (auto blk = blocks.begin(); blk != blocks.end(); blk++) {
         auto next_blk = std::next(blk);
         s32 curr_begin = -1;
+        if (&*blk == reopen_block) {
+            curr_begin = static_cast<s32>(blk->begin_index) - 1;
+            reopen_block = nullptr;
+        }
         for (size_t index = blk->begin_index; index <= blk->end_index; index++) {
             const auto& inst = inst_list[index];
             const bool is_close = is_close_scope(inst);
-            if ((is_close || index == blk->end_index) && curr_begin != -1) {
+            const bool is_split = !is_close && curr_begin != -1 && is_split_scope(inst);
+            // A close or split instruction is not part of the scope it ends.
+            const bool ends_scope = is_close || is_split;
+            if ((ends_scope || index == blk->end_index) && curr_begin != -1) {
                 // If there are no instructions inside scope don't do anything.
-                if (index - curr_begin == 1 && is_close) {
-                    curr_begin = is_open_scope(inst) ? static_cast<s32>(index) : -1;
+                if (index - curr_begin == 1 && ends_scope) {
+                    curr_begin = (is_split || is_open_scope(inst)) ? static_cast<s32>(index) : -1;
                     continue;
                 }
                 // If all instructions in the scope ignore exec masking, we shouldn't insert a
                 // scope.
                 const auto start = inst_list.begin() + curr_begin + 1;
-                if (!std::ranges::all_of(start, inst_list.begin() + index + !is_close,
+                if (!std::ranges::all_of(start, inst_list.begin() + index + !ends_scope,
                                          IgnoresExecMask)) {
                     // Determine the first instruction affected by the exec mask.
                     do {
@@ -244,6 +262,11 @@ void CFG::SplitDivergenceScopes() {
                         // If the parent block fails to enter divergence block make it jump to
                         // epilogue too
                         blk->branch_false = epi_block;
+
+                        // After a split the rest of the scope is in the epilogue.
+                        if (is_split) {
+                            reopen_block = epi_block;
+                        }
                     } else {
                         // No epilogue block is needed since the divergence block
                         // also ends the parent block. Inherit the end condition.
@@ -269,8 +292,8 @@ void CFG::SplitDivergenceScopes() {
                     blk->end_class = EndClass::Branch;
                     blk->branch_true = block;
                 }
-                // Reset scope begin.
-                curr_begin = -1;
+                // Reset scope begin, or after a split go on with the scope.
+                curr_begin = is_split ? static_cast<s32>(index) : -1;
             }
             // Mark a potential start of an exec scope.
             if (is_open_scope(inst)) {

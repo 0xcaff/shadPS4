@@ -110,6 +110,9 @@ Id EmitBufferAtomicCmpSwap32(EmitContext& ctx, IR::Inst* inst, u32 handle, Id ad
                              Id cmp_value);
 Id EmitBufferAtomicFCmpSwap32(EmitContext& ctx, IR::Inst* inst, u32 handle, Id address, Id value,
                               Id cmp_value);
+Id EmitBufferOrderedCount(EmitContext& ctx, IR::Inst* inst, u32 handle, Id address, Id value,
+                          Id wave);
+void EmitBufferOrderedSignal(EmitContext& ctx, u32 handle, Id wave);
 Id EmitGetAttribute(EmitContext& ctx, IR::Attribute attr, u32 comp, u32 index);
 Id EmitGetAttributeU1(EmitContext& ctx, IR::Attribute attr, u32 comp);
 Id EmitGetAttributeU32(EmitContext& ctx, IR::Attribute attr, u32 comp);
@@ -478,7 +481,7 @@ Id EmitWarpId(EmitContext& ctx);
 Id EmitQuadBroadcast(EmitContext& ctx, Id value, Id index);
 Id EmitShuffle(EmitContext& ctx, Id value, Id index);
 Id EmitShuffleXor(EmitContext& ctx, Id value, Id mask);
-Id EmitReadFirstLane(EmitContext& ctx, Id value);
+Id EmitReadFirstLane(EmitContext& ctx, IR::Inst* inst, Id value, Id exec);
 Id EmitReadLane(EmitContext& ctx, Id value, Id lane);
 Id EmitWriteLane(EmitContext& ctx, Id value, Id write_value, u32 lane);
 Id EmitBallot(EmitContext& ctx, Id bit);
@@ -487,6 +490,8 @@ Id EmitInverseBallot(EmitContext& ctx, Id mask);
 Id EmitGroupAny(EmitContext& ctx, Id bit);
 Id EmitDataAppend(EmitContext& ctx, Id gds_dw_offset, Id exec);
 Id EmitDataConsume(EmitContext& ctx, Id gds_dw_offset, Id exec);
+Id EmitGdsOrderedCount(EmitContext& ctx, Id gds_dw_offset, Id value, Id wave);
+void EmitGdsOrderedSignal(EmitContext& ctx, Id wave);
 
 void EmitEmitVertex(EmitContext& ctx);
 void EmitEmitPrimitive(EmitContext& ctx);

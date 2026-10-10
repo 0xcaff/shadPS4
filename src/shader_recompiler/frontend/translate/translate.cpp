@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "common/div_ceil.h"
 #include "common/io_file.h"
 #include "common/path_util.h"
 #include "core/emulator_settings.h"
@@ -79,6 +80,22 @@ Translator::Translator(Info& info_, const RuntimeInfo& runtime_info_, const Prof
     IterateBarycentrics(runtime_info, [this](u32 vreg, IR::Attribute attrib, u32) {
         vgpr_to_interp[vreg] = attrib;
     });
+}
+
+u32 Translator::WavesPerGroup() const {
+    const auto& [size_x, size_y, size_z] = runtime_info.hw.cs.workgroup_size;
+    return Common::DivCeil(std::max(size_x * size_y * size_z, 1u), 64u);
+}
+
+IR::U32 Translator::LocalWaveIndex() {
+    return ir.ShiftRightLogical(ir.GetAttributeU32(IR::Attribute::LocalInvocationIndex),
+                                ir.Imm32(6u));
+}
+
+IR::U32 Translator::OrderedWaveIndex() {
+    const IR::U32 group_base =
+        ir.IMul(ir.GetAttributeU32(IR::Attribute::WorkgroupIndex), ir.Imm32(WavesPerGroup()));
+    return ir.IAdd(group_base, LocalWaveIndex());
 }
 
 void Translator::EmitPrologue(IR::Block* first_block) {
@@ -290,6 +307,21 @@ void Translator::EmitPrologue(IR::Block* first_block) {
         }
         if (runtime_info.hw.cs.tgid_enable[2]) {
             ir.SetScalarReg(dst_sreg++, ir.GetAttributeU32(IR::Attribute::WorkgroupId, 2));
+        }
+        if (runtime_info.hw.cs.tg_size_enable) {
+            // Bits 6 and up hold the wave's ordered-append term when the dispatch enables ordered
+            // append, otherwise the wave's index in its thread group.
+            const IR::U32 wave_id =
+                runtime_info.hw.cs.ordered_append
+                    ? IR::U32{ir.BitwiseAnd(OrderedWaveIndex(), ir.Imm32(0x7ffu))}
+                    : LocalWaveIndex();
+            const IR::U32 first_wave = IR::U32{ir.Select(ir.IEqual(LocalWaveIndex(), ir.Imm32(0u)),
+                                                         ir.Imm32(1u << 31), ir.Imm32(0u))};
+            const IR::U32 wave_count = ir.Imm32(WavesPerGroup() & 0x3fu);
+            ir.SetScalarReg(
+                dst_sreg++,
+                ir.BitwiseOr(ir.BitwiseOr(wave_count, ir.ShiftLeftLogical(wave_id, ir.Imm32(6u))),
+                             first_wave));
         }
         break;
     case SwStage::Geometry:

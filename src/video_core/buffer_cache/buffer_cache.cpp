@@ -7,6 +7,7 @@
 #include "common/alignment.h"
 #include "core/debug_state.h"
 #include "core/memory.h"
+#include "shader_recompiler/info.h"
 #include "video_core/amdgpu/liverpool.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/buffer_cache/buffer_cache.h"
@@ -22,7 +23,7 @@
 
 namespace VideoCore {
 
-static constexpr size_t GDS_BUFFER_SIZE = 64_KB;
+static constexpr size_t GDS_BUFFER_SIZE = 64_KB + Shader::GdsOrderedCounters * sizeof(u32);
 static constexpr size_t NULL_INDEX_BUFFER_SIZE = 16;
 static constexpr size_t STREAM_BUFFER_SIZE = 128_MB;
 

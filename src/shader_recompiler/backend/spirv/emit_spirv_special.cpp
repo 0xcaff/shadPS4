@@ -16,6 +16,9 @@ void EmitPrologue(EmitContext& ctx) {
         ctx.DefineWorkgroupIndex();
     }
     ctx.DefineBufferProperties();
+    if (ctx.info.uses_ordered_count) {
+        ctx.ResetOrderedCountState();
+    }
 }
 
 void ConvertDepthMode(EmitContext& ctx) {

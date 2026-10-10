@@ -201,7 +201,8 @@ struct ComputeProgram {
         u32 num_user_regs : 5;
         u32 : 1;
         u32 tgid_enable : 3;
-        u32 : 5;
+        u32 tg_size_enable : 1;
+        u32 : 4;
         u32 lds_dwords : 9;
     } settings;
     u32 pad2;
@@ -225,6 +226,14 @@ struct ComputeProgram {
 
     bool IsTgidEnabled(u32 i) const noexcept {
         return (settings.tgid_enable >> i) & 1;
+    }
+
+    bool IsTgSizeEnabled() const noexcept {
+        return settings.tg_size_enable != 0;
+    }
+
+    bool IsOrderedAppendEnabled() const noexcept {
+        return (dispatch_initiator >> 3) & 1;
     }
 };
 

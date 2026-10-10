@@ -450,6 +450,19 @@ void PatchGlobalDataShareAccess(IR::Inst& inst, Info& info, Descriptors& descrip
 
     IR::IREmitter ir{*inst.GetParent(), IR::Block::InstructionList::s_iterator_to(inst)};
 
+    if (inst.GetOpcode() == IR::Opcode::GdsOrderedCount) {
+        const IR::Value replacement =
+            ir.BufferOrderedCount(ir.Imm32(binding), inst.Arg(0), IR::U32{inst.Arg(1)},
+                                  IR::U32{inst.Arg(2)}, inst.Flags<u32>());
+        inst.ReplaceUsesWithAndRemove(replacement);
+        return;
+    }
+    if (inst.GetOpcode() == IR::Opcode::GdsOrderedSignal) {
+        ir.BufferOrderedSignal(ir.Imm32(binding), IR::U32{inst.Arg(0)});
+        inst.Invalidate();
+        return;
+    }
+
     if (inst.GetOpcode() == IR::Opcode::DataAppend || inst.GetOpcode() == IR::Opcode::DataConsume) {
         RemoveAppendBufferLaneOffset(inst);
         const IR::Value replacement =

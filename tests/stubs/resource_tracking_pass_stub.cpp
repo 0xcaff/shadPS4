@@ -307,6 +307,24 @@ void PatchBufferArgs(IR::Block& block, IR::Inst& inst, Info& info) {
                 CalculateBufferAddress(ir, inst, info, buffer, buffer.stride));
 }
 
+void PatchOrderedCount(IR::Inst& inst, Descriptors& descriptors) {
+    const u32 binding = descriptors.Add(BufferResource{
+        .used_types = IR::Type::U32,
+        .buffer_type = BufferType::GdsBuffer,
+        .is_written = true,
+    });
+
+    IR::IREmitter ir{*inst.GetParent(), IR::Block::InstructionList::s_iterator_to(inst)};
+    if (inst.GetOpcode() == IR::Opcode::GdsOrderedCount) {
+        inst.ReplaceUsesWithAndRemove(
+            ir.BufferOrderedCount(ir.Imm32(binding), inst.Arg(0), IR::U32{inst.Arg(1)},
+                                  IR::U32{inst.Arg(2)}, inst.Flags<u32>()));
+    } else {
+        ir.BufferOrderedSignal(ir.Imm32(binding), IR::U32{inst.Arg(0)});
+        inst.Invalidate();
+    }
+}
+
 void ResourceTrackingPassStub(IR::Program& program, const Profile& profile) {
     // Iterate resource instructions and patch them after finding the sharp.
     auto& info = program.info;
@@ -326,6 +344,18 @@ void ResourceTrackingPassStub(IR::Program& program, const Profile& profile) {
         for (IR::Inst& inst : block->Instructions()) {
             if (IsBufferInstruction(inst)) {
                 PatchBufferArgs(*block, inst, info);
+            }
+        }
+    }
+}
+
+void OrderedCountPassStub(IR::Program& program) {
+    Descriptors descriptors{program.info};
+    for (IR::Block* const block : program.blocks) {
+        for (IR::Inst& inst : block->Instructions()) {
+            if (inst.GetOpcode() == IR::Opcode::GdsOrderedCount ||
+                inst.GetOpcode() == IR::Opcode::GdsOrderedSignal) {
+                PatchOrderedCount(inst, descriptors);
             }
         }
     }

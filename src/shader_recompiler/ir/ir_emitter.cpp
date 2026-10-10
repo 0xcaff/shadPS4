@@ -641,6 +641,26 @@ U32 IREmitter::DataConsume(const U32& gds_dw_offset) {
     return Inst<U32>(Opcode::DataConsume, gds_dw_offset, GetExec());
 }
 
+U32 IREmitter::GdsOrderedCount(const U32& gds_dw_offset, const U32& value, const U32& wave,
+                               u32 counter, bool is_swap, bool is_release) {
+    const u32 flags = (is_swap ? OrderedCountSwap : 0u) | (is_release ? OrderedCountRelease : 0u) |
+                      (counter << OrderedCountCounterShift);
+    return Inst<U32>(Opcode::GdsOrderedCount, Flags{flags}, gds_dw_offset, value, wave);
+}
+
+void IREmitter::GdsOrderedSignal(const U32& wave) {
+    Inst(Opcode::GdsOrderedSignal, wave);
+}
+
+U32 IREmitter::BufferOrderedCount(const Value& handle, const Value& address, const U32& value,
+                                  const U32& wave, u32 flags) {
+    return Inst<U32>(Opcode::BufferOrderedCount, Flags{flags}, handle, address, value, wave);
+}
+
+void IREmitter::BufferOrderedSignal(const Value& handle, const U32& wave) {
+    Inst(Opcode::BufferOrderedSignal, handle, wave);
+}
+
 U32 IREmitter::LaneId() {
     return Inst<U32>(Opcode::LaneId);
 }
@@ -661,8 +681,8 @@ U32 IREmitter::ShuffleXor(const U32& value, const U32& mask) {
     return Inst<U32>(Opcode::ShuffleXor, value, mask);
 }
 
-U32 IREmitter::ReadFirstLane(const U32& value) {
-    return Inst<U32>(Opcode::ReadFirstLane, value);
+U32 IREmitter::ReadFirstLane(const U32& value, const U1& exec) {
+    return Inst<U32>(Opcode::ReadFirstLane, value, exec);
 }
 
 U32 IREmitter::ReadLane(const U32& value, const U32& lane) {

@@ -114,6 +114,7 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
     }
 
     std::vector<IR::Inst*> worklist;
+    std::vector<IR::Inst*> write_lanes;
     const auto uniform_blocks = FindUniformBlocks(program);
     for (IR::Block* block : program.blocks) {
         const bool is_uniform = std::ranges::contains(uniform_blocks, block);
@@ -126,7 +127,9 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
             }
         };
         for (IR::Inst& inst : block->Instructions()) {
-            if (inst.GetOpcode() == IR::Opcode::ReadLane && inst.Arg(1).IsImmediate()) {
+            if (inst.GetOpcode() == IR::Opcode::WriteLane) {
+                write_lanes.push_back(&inst);
+            } else if (inst.GetOpcode() == IR::Opcode::ReadLane && inst.Arg(1).IsImmediate()) {
                 push_worklist(inst);
             } else if (inst.GetOpcode() == IR::Opcode::Ballot) {
                 const auto is_unpack = [](const IR::Use& use) {
@@ -143,6 +146,16 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
                 }
             }
         }
+    }
+    // A lane write reads no other lane, so it needs no shared memory and works in any block: each
+    // lane compares its lane in the wave, not in the host subgroup, with the selected lane.
+    for (IR::Inst* inst : write_lanes) {
+        LOG_INFO(Render_Recompiler, "Lowering {} instruction for wave64", inst->GetOpcode());
+        IR::IREmitter ir{*inst->GetParent(), IR::Block::InstructionList::s_iterator_to(*inst)};
+        const IR::U32 wave_lane =
+            ir.BitwiseAnd(ir.GetAttributeU32(IR::Attribute::LocalInvocationIndex), ir.Imm32(63));
+        const IR::U1 is_lane = ir.IEqual(wave_lane, IR::U32{inst->Arg(2)});
+        inst->ReplaceUsesWithAndRemove(ir.Select(is_lane, inst->Arg(1), inst->Arg(0)));
     }
     if (worklist.empty()) {
         return;
