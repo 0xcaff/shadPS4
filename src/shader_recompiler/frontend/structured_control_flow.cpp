@@ -628,6 +628,9 @@ private:
                 // Labels can be ignored
                 break;
             case StatementType::Code: {
+                if (current_block && current_block != stmt.block->ir_block) {
+                    current_block->AddBranch(stmt.block->ir_block);
+                }
                 current_block = stmt.block->ir_block;
                 insert_point = current_block->end();
                 for (auto& node : syntax_list) {

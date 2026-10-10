@@ -348,6 +348,14 @@ U32U64 IREmitter::SharedAtomicIMax(const U32& address, const U32U64& data, bool 
     }
 }
 
+F32 IREmitter::SharedAtomicFMin(const U32& address, const F32& data, bool is_gds) {
+    return Inst<F32>(Opcode::SharedAtomicFMin32, Flags{is_gds}, address, data);
+}
+
+F32 IREmitter::SharedAtomicFMax(const U32& address, const F32& data, bool is_gds) {
+    return Inst<F32>(Opcode::SharedAtomicFMax32, Flags{is_gds}, address, data);
+}
+
 U32U64 IREmitter::SharedAtomicAnd(const U32& address, const U32U64& data, bool is_gds) {
     switch (data.Type()) {
     case Type::U32:
@@ -1888,6 +1896,8 @@ U32U64 IREmitter::ConvertFToU(size_t bitsize, const F32F64& value) {
         switch (value.Type()) {
         case Type::F32:
             return Inst<U32>(Opcode::ConvertU32F32, value);
+        case Type::F64:
+            return Inst<U32>(Opcode::ConvertU32F64, value);
         default:
             ThrowInvalidType(value.Type());
         }

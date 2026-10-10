@@ -35,14 +35,24 @@ IR::BlockList GenerateBlocks(const IR::AbstractSyntaxList& syntax_list) {
 void EmitControlFlowGraph(IR::Program& program, Pools& pools, Gcn::CFG& cfg,
                           RuntimeInfo& runtime_info, const Profile& profile) {
     Gcn::Translator translator{program.info, runtime_info, profile};
+    for (const auto& [index, table] : cfg.jump_tables) {
+        translator.jump_table_loads.emplace(table.load_pc, table.offsets);
+    }
     for (auto& block : cfg) {
         const u32 start = block.begin_index;
         const u32 size = block.end_index - start + 1;
         auto* ir_block = pools.block_pool.Create(pools.inst_pool);
         ir_block->cfg_block = &block;
         block.ir_block = ir_block;
-        translator.Translate(ir_block, block.begin, block.cond,
-                             std::span{program.ins_list}.subspan(start, size));
+        if (block.indirect_condition) {
+            IR::IREmitter ir{*ir_block};
+            const auto [index_reg, offset] = *block.indirect_condition;
+            ir_block->branch_cond = ir.ConditionRef(
+                ir.IEqual(ir.GetScalarReg(IR::ScalarReg(index_reg)), ir.Imm32(offset)));
+        } else {
+            translator.Translate(ir_block, block.begin, block.cond,
+                                 std::span{program.ins_list}.subspan(start, size));
+        }
         program.blocks.push_back(ir_block);
     }
     translator.EmitPrologue(program.blocks.front());
@@ -88,7 +98,7 @@ IR::Program TranslateProgram(const std::span<const u32>& code, Pools& pools, Inf
 
     // Create control flow graph
     Common::ObjectPool<Gcn::Block> gcn_block_pool{64};
-    Gcn::CFG cfg{gcn_block_pool, program.ins_list};
+    Gcn::CFG cfg{gcn_block_pool, program.ins_list, info.pgm_base};
     EmitControlFlowGraph(program, pools, cfg, runtime_info, profile);
 
     // On NVIDIA GPUs HW interpolation of clip distance values seems broken, and we need to emulate

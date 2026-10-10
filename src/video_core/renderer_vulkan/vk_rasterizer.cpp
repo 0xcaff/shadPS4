@@ -914,11 +914,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
                 image_id = depth_image_id;
                 image = &texture_cache.GetImage(image_id);
             }
-            if (image->binding.is_bound) {
-                // The image is already bound. In case if it is about to be used as storage we
-                // need to force general layout on it.
-                image->binding.force_general |= image_desc.is_written;
-            }
+            image->binding.force_general |= image_desc.is_written;
             image->binding.is_bound = 1u;
         }
 

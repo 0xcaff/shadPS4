@@ -51,6 +51,20 @@ void Translator::S_LOAD_DWORD(int num_dwords, const GcnInst& inst) {
         }
         return ir.ShiftRightLogical(ir.GetScalarReg(IR::ScalarReg(smrd.offset)), ir.Imm32(2));
     }();
+    if (const auto it = jump_table_loads.find(pc); it != jump_table_loads.end()) {
+        ASSERT(num_dwords == 2);
+        const auto& entries = it->second;
+        for (u32 word = 0; word < 2; ++word) {
+            const u32 shift = word * 32;
+            IR::U32 value = ir.Imm32(static_cast<u32>(entries.back() >> shift));
+            for (u32 i = 0; i + 1 < entries.size(); ++i) {
+                value = IR::U32{ir.Select(ir.IEqual(dword_offset, ir.Imm32(i * 2)),
+                                          ir.Imm32(static_cast<u32>(entries[i] >> shift)), value)};
+            }
+            ir.SetScalarReg(IR::ScalarReg(inst.dst[0].code + word), value);
+        }
+        return;
+    }
     const IR::Value base =
         ir.CompositeConstruct(ir.GetScalarReg(sbase), ir.GetScalarReg(sbase + 1));
     IR::ScalarReg dst_reg{inst.dst[0].code};

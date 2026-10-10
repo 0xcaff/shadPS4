@@ -28,6 +28,22 @@ void Translator::EmitDataShare(const GcnInst& inst) {
         return DS_OP(inst, AtomicOp::Umin, false);
     case Opcode::DS_MAX_U32:
         return DS_OP(inst, AtomicOp::Umax, false);
+    case Opcode::DS_MIN_I64:
+        return DS_OP<IR::U64>(inst, AtomicOp::Smin, false);
+    case Opcode::DS_MAX_I64:
+        return DS_OP<IR::U64>(inst, AtomicOp::Smax, false);
+    case Opcode::DS_MIN_U64:
+        return DS_OP<IR::U64>(inst, AtomicOp::Umin, false);
+    case Opcode::DS_MAX_U64:
+        return DS_OP<IR::U64>(inst, AtomicOp::Umax, false);
+    case Opcode::DS_MIN_F32:
+        return DS_FLOAT_MIN_MAX(inst, false, false);
+    case Opcode::DS_MAX_F32:
+        return DS_FLOAT_MIN_MAX(inst, true, false);
+    case Opcode::DS_MIN_RTN_F32:
+        return DS_FLOAT_MIN_MAX(inst, false, true);
+    case Opcode::DS_MAX_RTN_F32:
+        return DS_FLOAT_MIN_MAX(inst, true, true);
     case Opcode::DS_AND_B32:
         return DS_OP(inst, AtomicOp::And, false);
     case Opcode::DS_OR_B32:
@@ -48,6 +64,14 @@ void Translator::EmitDataShare(const GcnInst& inst) {
         return DS_OP(inst, AtomicOp::Umin, true);
     case Opcode::DS_MAX_RTN_U32:
         return DS_OP(inst, AtomicOp::Umax, true);
+    case Opcode::DS_MIN_RTN_I64:
+        return DS_OP<IR::U64>(inst, AtomicOp::Smin, true);
+    case Opcode::DS_MAX_RTN_I64:
+        return DS_OP<IR::U64>(inst, AtomicOp::Smax, true);
+    case Opcode::DS_MIN_RTN_U64:
+        return DS_OP<IR::U64>(inst, AtomicOp::Umin, true);
+    case Opcode::DS_MAX_RTN_U64:
+        return DS_OP<IR::U64>(inst, AtomicOp::Umax, true);
     case Opcode::DS_AND_RTN_B32:
         return DS_OP(inst, AtomicOp::And, true);
     case Opcode::DS_OR_RTN_B32:
@@ -172,6 +196,20 @@ void Translator::DS_OP(const GcnInst& inst, AtomicOp op, bool rtn) {
         } else {
             SetDst64(inst.dst[0], original_val);
         }
+    }
+}
+
+void Translator::DS_FLOAT_MIN_MAX(const GcnInst& inst, bool is_max, bool rtn) {
+    const bool is_gds = inst.control.ds.gds;
+    const IR::U32 addr{GetSrc(inst.src[0])};
+    const IR::F32 data{GetSrc<IR::F32>(inst.src[1])};
+    const IR::U32 offset =
+        ir.Imm32((u32(inst.control.ds.offset1) << 8u) + u32(inst.control.ds.offset0));
+    const IR::U32 address = ir.IAdd(addr, offset);
+    const IR::F32 original = is_max ? ir.SharedAtomicFMax(address, data, is_gds)
+                                    : ir.SharedAtomicFMin(address, data, is_gds);
+    if (rtn) {
+        SetDst(inst.dst[0], original);
     }
 }
 

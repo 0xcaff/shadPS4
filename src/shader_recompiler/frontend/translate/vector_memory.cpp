@@ -420,7 +420,9 @@ void Translator::BUFFER_ATOMIC(AtomicOp op, const GcnInst& inst) {
 
     if (mubuf.glc) {
         if constexpr (std::is_same_v<T, IR::U64>) {
-            UNREACHABLE();
+            const IR::Value words = ir.UnpackUint2x32(IR::U64{original_val});
+            ir.SetVectorReg(vdata, IR::U32{ir.CompositeExtract(words, 0)});
+            ir.SetVectorReg(vdata + 1, IR::U32{ir.CompositeExtract(words, 1)});
         } else {
             ir.SetVectorReg(vdata, T{original_val});
         }

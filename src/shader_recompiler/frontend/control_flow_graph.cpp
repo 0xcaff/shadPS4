@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <cstring>
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "shader_recompiler/frontend/control_flow_graph.h"
@@ -15,11 +16,11 @@ struct Compare {
     }
 
     bool operator()(u32 lhs, const Block& rhs) const noexcept {
-        return lhs < rhs.begin;
+        return lhs < rhs.begin || (lhs == rhs.begin && rhs.dispatch_order != 0);
     }
 
     bool operator()(const Block& lhs, const Block& rhs) const noexcept {
-        return lhs.begin < rhs.begin;
+        return lhs < rhs;
     }
 };
 
@@ -103,9 +104,163 @@ static std::optional<u32> ResolveSetPcTarget(std::span<const GcnInst> list, u32 
 
 static constexpr size_t LabelReserveSize = 32;
 
-CFG::CFG(Common::ObjectPool<Block>& block_pool_, std::span<const GcnInst> inst_list_)
-    : block_pool{block_pool_}, inst_list{inst_list_} {
+static std::optional<u32> Immediate(const InstOperand& operand) {
+    switch (operand.field) {
+    case OperandField::LiteralConst:
+        return operand.code;
+    case OperandField::ConstZero:
+        return 0;
+    case OperandField::SignedConstIntPos:
+        return operand.code - 128;
+    case OperandField::SignedConstIntNeg:
+        return 192 - operand.code;
+    default:
+        return std::nullopt;
+    }
+}
+
+static bool WritesScalar(const GcnInst& inst, u32 reg) {
+    for (u32 i = 0; i < inst.dst_count; ++i) {
+        const auto& dst = inst.dst[i];
+        if (dst.field == OperandField::VectorGPR) {
+            continue;
+        }
+        const u32 count =
+            inst.category == InstCategory::ScalarMemory
+                ? inst.control.smrd.count
+                : (dst.type == ScalarType::Uint64 || dst.type == ScalarType::Sint64 ? 2 : 1);
+        if (reg >= dst.code && reg - dst.code < count) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static std::optional<u32> FindScalarWrite(std::span<const GcnInst> list, u32 before, u32 reg) {
+    while (before > 0) {
+        const auto& inst = list[--before];
+        if (inst.IsTerminateInstruction()) {
+            return std::nullopt;
+        }
+        if (WritesScalar(inst, reg)) {
+            return before;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<CFG::JumpTable> CFG::ResolveJumpTable(u32 setpc_index) const {
+    if (setpc_index < 3) {
+        return std::nullopt;
+    }
+    const auto& getpc = inst_list[setpc_index - 3];
+    const auto& add = inst_list[setpc_index - 2];
+    const auto& carry = inst_list[setpc_index - 1];
+    const u32 pc_reg = inst_list[setpc_index].src[0].code;
+    if (getpc.opcode != Opcode::S_GETPC_B64 || getpc.dst[0].code != pc_reg ||
+        add.opcode != Opcode::S_ADD_U32 || add.dst[0].code != pc_reg ||
+        carry.opcode != Opcode::S_ADDC_U32 || carry.dst[0].code != pc_reg + 1) {
+        return std::nullopt;
+    }
+    const auto other_source = [](const GcnInst& inst, u32 reg) -> const InstOperand* {
+        if (inst.src[0].field == OperandField::ScalarGPR && inst.src[0].code == reg) {
+            return &inst.src[1];
+        }
+        if (inst.src[1].field == OperandField::ScalarGPR && inst.src[1].code == reg) {
+            return &inst.src[0];
+        }
+        return nullptr;
+    };
+    const auto* offset = other_source(add, pc_reg);
+    const auto* offset_hi = other_source(carry, pc_reg + 1);
+    if (!offset || !offset_hi || offset->field != OperandField::ScalarGPR ||
+        offset_hi->field != OperandField::ScalarGPR || offset_hi->code != offset->code + 1 ||
+        (offset->code <= pc_reg + 1 && offset_hi->code >= pc_reg)) {
+        return std::nullopt;
+    }
+    const auto load_index = FindScalarWrite(inst_list, setpc_index - 3, offset->code);
+    if (!load_index || *load_index < 3) {
+        return std::nullopt;
+    }
+    const auto& load = inst_list[*load_index];
+    if (load.opcode != Opcode::S_LOAD_DWORDX2 || load.dst[0].code != offset->code ||
+        load.control.smrd.imm || load.src[1].field != OperandField::ScalarGPR) {
+        return std::nullopt;
+    }
+    const u32 index_reg = load.control.smrd.offset;
+    for (u32 i = *load_index; i < setpc_index; ++i) {
+        if (WritesScalar(inst_list[i], index_reg) ||
+            (i > *load_index && i < setpc_index - 3 &&
+             (WritesScalar(inst_list[i], offset->code) ||
+              WritesScalar(inst_list[i], offset_hi->code)))) {
+            return std::nullopt;
+        }
+    }
+    const u32 base_reg = load.src[0].code * 2;
+    const auto& table_pc = inst_list[*load_index - 3];
+    const auto& table_add = inst_list[*load_index - 2];
+    const auto& table_carry = inst_list[*load_index - 1];
+    if (table_pc.opcode != Opcode::S_GETPC_B64 || table_pc.dst[0].code != base_reg ||
+        table_add.opcode != Opcode::S_ADD_U32 || table_add.dst[0].code != base_reg ||
+        table_carry.opcode != Opcode::S_ADDC_U32 || table_carry.dst[0].code != base_reg + 1) {
+        return std::nullopt;
+    }
+    const auto* table_offset = other_source(table_add, base_reg);
+    const auto* table_high = other_source(table_carry, base_reg + 1);
+    if (!table_offset || !table_high || !Immediate(*table_offset) || Immediate(*table_high) != 0) {
+        return std::nullopt;
+    }
+    const auto shift_index = FindScalarWrite(inst_list, *load_index, index_reg);
+    if (!shift_index) {
+        return std::nullopt;
+    }
+    const auto& shift = inst_list[*shift_index];
+    if (shift.opcode != Opcode::S_LSHL_B32 || Immediate(shift.src[1]) != 3) {
+        return std::nullopt;
+    }
+    const auto clamp_index = FindScalarWrite(inst_list, *shift_index, shift.src[0].code);
+    if (!clamp_index) {
+        return std::nullopt;
+    }
+    const auto& clamp = inst_list[*clamp_index];
+    if (clamp.opcode != Opcode::S_MIN_U32) {
+        return std::nullopt;
+    }
+    auto bound = Immediate(clamp.src[0]);
+    if (!bound) {
+        bound = Immediate(clamp.src[1]);
+    }
+    if (!bound || *bound >= 256) {
+        return std::nullopt;
+    }
+    const u32 table_address =
+        index_to_pc[*load_index - 3] + table_pc.length + *Immediate(*table_offset);
+    const u32 branch_base = index_to_pc[setpc_index - 3] + getpc.length;
+    JumpTable result{index_reg, {}, index_to_pc[*load_index + 1], {}};
+    for (u32 i = 0; i <= *bound; ++i) {
+        u64 relative;
+        std::memcpy(&relative, reinterpret_cast<const void*>(pgm_base + table_address + i * 8),
+                    sizeof(relative));
+        const u64 target = (branch_base + relative) & ~u64{3};
+        if (target >= index_to_pc.back() ||
+            !std::ranges::binary_search(index_to_pc, static_cast<u32>(target))) {
+            return std::nullopt;
+        }
+        result.targets.push_back(static_cast<u32>(target));
+        result.offsets.push_back(relative);
+    }
+    LOG_INFO(Render_Recompiler, "Resolved jump table at {:#x}: {} entries", table_address,
+             result.targets.size());
+    return result;
+}
+
+CFG::CFG(Common::ObjectPool<Block>& block_pool_, std::span<const GcnInst> inst_list_,
+         VAddr pgm_base_)
+    : block_pool{block_pool_}, inst_list{inst_list_}, pgm_base{pgm_base_} {
     index_to_pc.resize(inst_list.size() + 1);
+    for (u32 i = 0; i < inst_list.size(); ++i) {
+        index_to_pc[i + 1] = index_to_pc[i] + inst_list[i].length;
+    }
     labels.reserve(LabelReserveSize);
     EmitLabels();
     EmitBlocks();
@@ -128,6 +283,14 @@ void CFG::EmitLabels() {
             if (inst.opcode == Opcode::S_SETPC_B64) {
                 if (auto t = ResolveSetPcTarget(inst_list, i, index_to_pc)) {
                     target = *t;
+                } else if (auto table = ResolveJumpTable(i)) {
+                    for (const u32 address : table->targets) {
+                        AddLabel(address);
+                    }
+                    jump_tables.emplace(i, std::move(*table));
+                    AddLabel(pc + inst.length);
+                    pc += inst.length;
+                    continue;
                 } else {
                     ASSERT_MSG(
                         false,
@@ -195,6 +358,9 @@ void CFG::SplitDivergenceScopes() {
     // under the scope's exec mask.
     const Block* reopen_block = nullptr;
     for (auto blk = blocks.begin(); blk != blocks.end(); blk++) {
+        if (blk->indirect_condition) {
+            continue;
+        }
         auto next_blk = std::next(blk);
         s32 curr_begin = -1;
         if (&*blk == reopen_block) {
@@ -338,9 +504,15 @@ void CFG::LinkBlocks() {
         return &*it;
     };
 
+    std::vector<Block*> indirect_blocks;
     for (auto it = blocks.begin(); it != blocks.end(); it++) {
         auto& block = *it;
         const auto end_inst{block.end_inst};
+        if (jump_tables.contains(block.end_index)) {
+            indirect_blocks.push_back(&block);
+            block.end_class = EndClass::Branch;
+            continue;
+        }
 
         // If the block doesn't end with a branch we simply
         // need to link with the next block.
@@ -389,6 +561,27 @@ void CFG::LinkBlocks() {
             block.end_class = EndClass::Exit;
         } else {
             UNREACHABLE();
+        }
+    }
+
+    for (auto* source : indirect_blocks) {
+        const auto& table = jump_tables.at(source->end_index);
+        Block** next = &source->branch_true;
+        for (u32 i = 0; i < table.targets.size(); ++i) {
+            auto* block = block_pool.Create();
+            block->begin = source->end - 1;
+            block->end = source->end;
+            block->dispatch_order = i + 1;
+            block->end_class = EndClass::Branch;
+            block->cond =
+                i + 1 == table.targets.size() ? IR::Condition::True : IR::Condition::Indirect;
+            block->indirect_condition = Block::IndirectCondition{table.index_reg, i * 8};
+            block->branch_true = get_block(table.targets[i]);
+            block->branch_true->num_predecessors++;
+            block->num_predecessors = 1;
+            blocks.insert(*block);
+            *next = block;
+            next = &block->branch_false;
         }
     }
 }

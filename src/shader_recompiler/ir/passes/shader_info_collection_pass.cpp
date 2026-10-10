@@ -55,6 +55,8 @@ void Visit(Info& info, const IR::Inst& inst) {
     case IR::Opcode::SharedAtomicIAdd32:
     case IR::Opcode::SharedAtomicISub32:
     case IR::Opcode::SharedAtomicSMin32:
+    case IR::Opcode::SharedAtomicFMin32:
+    case IR::Opcode::SharedAtomicFMax32:
     case IR::Opcode::SharedAtomicUMin32:
     case IR::Opcode::SharedAtomicSMax32:
     case IR::Opcode::SharedAtomicUMax32:

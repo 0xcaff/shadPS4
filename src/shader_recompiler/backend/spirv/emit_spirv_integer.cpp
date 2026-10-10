@@ -188,7 +188,19 @@ Id EmitBitFieldInsert32(EmitContext& ctx, Id base, Id insert, Id offset, Id coun
 }
 
 Id EmitBitFieldInsert64(EmitContext& ctx, Id base, Id insert, Id offset, Id count) {
-    return ctx.OpBitFieldInsert(ctx.U64, base, insert, offset, count);
+    const Id safe_count = ctx.OpBitwiseAnd(ctx.U32[1], count, ctx.ConstU32(63u));
+    const Id safe_offset = ctx.OpBitwiseAnd(ctx.U32[1], offset, ctx.ConstU32(63u));
+    const Id low_mask = ctx.OpISub(
+        ctx.U64, ctx.OpShiftLeftLogical(ctx.U64, ctx.u64_one_value, safe_count), ctx.u64_one_value);
+    const Id full_width = ctx.OpIEqual(ctx.U1[1], count, ctx.ConstU32(64u));
+    const Id mask = ctx.OpShiftLeftLogical(
+        ctx.U64,
+        ctx.OpSelect(ctx.U64, full_width, ctx.OpNot(ctx.U64, ctx.u64_zero_value), low_mask),
+        safe_offset);
+    const Id cleared = ctx.OpBitwiseAnd(ctx.U64, base, ctx.OpNot(ctx.U64, mask));
+    const Id inserted =
+        ctx.OpBitwiseAnd(ctx.U64, ctx.OpShiftLeftLogical(ctx.U64, insert, safe_offset), mask);
+    return ctx.OpBitwiseOr(ctx.U64, cleared, inserted);
 }
 
 Id EmitBitFieldSExtract(EmitContext& ctx, IR::Inst* inst, Id base, Id offset, Id count) {

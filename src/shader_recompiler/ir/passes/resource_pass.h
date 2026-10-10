@@ -96,6 +96,8 @@ inline bool IsDataRingInstruction(const IR::Inst& inst) {
     case IR::Opcode::WriteSharedU64:
     case IR::Opcode::SharedAtomicIAdd32:
     case IR::Opcode::SharedAtomicIAdd64:
+    case IR::Opcode::SharedAtomicFMin32:
+    case IR::Opcode::SharedAtomicFMax32:
     case IR::Opcode::SharedAtomicUMin32:
     case IR::Opcode::SharedAtomicUMin64:
     case IR::Opcode::SharedAtomicSMin32:

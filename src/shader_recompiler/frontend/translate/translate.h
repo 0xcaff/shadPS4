@@ -65,6 +65,8 @@ class Translator {
 public:
     explicit Translator(Info& info, const RuntimeInfo& runtime_info, const Profile& profile);
 
+    std::unordered_map<u32, std::vector<u64>> jump_table_loads;
+
     void Translate(IR::Block* block, u32 pc, IR::Condition cond,
                    std::span<const GcnInst> inst_list);
     void TranslateInstruction(const GcnInst& inst);
@@ -203,6 +205,7 @@ public:
     void V_MOV(const GcnInst& inst);
     void V_READFIRSTLANE_B32(const GcnInst& inst);
     void V_CVT_I32_F64(const GcnInst& inst);
+    void V_CVT_U32_F64(const GcnInst& inst);
     void V_CVT_F64_I32(const GcnInst& inst);
     void V_CVT_F64_U32(const GcnInst& inst);
     void V_CVT_F32_I32(const GcnInst& inst);
@@ -337,6 +340,7 @@ public:
     void DS_APPEND(const GcnInst& inst);
     void DS_CONSUME(const GcnInst& inst);
     void DS_ORDERED_COUNT(const GcnInst& inst);
+    void DS_FLOAT_MIN_MAX(const GcnInst& inst, bool is_max, bool rtn);
     void DS_CMPST(int bit_size, bool rtn, const GcnInst& inst);
 
     // Buffer Memory

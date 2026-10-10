@@ -102,6 +102,8 @@ public:
                                           bool is_gds);
     [[nodiscard]] U32U64 SharedAtomicIMax(const U32& address, const U32U64& data, bool is_signed,
                                           bool is_gds);
+    [[nodiscard]] F32 SharedAtomicFMin(const U32& address, const F32& data, bool is_gds);
+    [[nodiscard]] F32 SharedAtomicFMax(const U32& address, const F32& data, bool is_gds);
     [[nodiscard]] U32U64 SharedAtomicAnd(const U32& address, const U32U64& data, bool is_gds);
     [[nodiscard]] U32U64 SharedAtomicOr(const U32& address, const U32U64& data, bool is_gds);
     [[nodiscard]] U32U64 SharedAtomicXor(const U32& address, const U32U64& data, bool is_gds);

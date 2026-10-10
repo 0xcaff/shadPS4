@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <span>
 #include <string>
+#include <unordered_map>
 #include <boost/container/small_vector.hpp>
 #include <boost/intrusive/set.hpp>
 
@@ -31,10 +32,14 @@ enum class EndClass {
 
 /// A block represents a linear range of instructions.
 struct Block : Hook {
+    struct IndirectCondition {
+        u32 index_reg;
+        u32 offset;
+    };
     [[nodiscard]] bool Contains(u32 pc) const noexcept;
 
     bool operator<(const Block& rhs) const noexcept {
-        return begin < rhs.begin;
+        return begin < rhs.begin || (begin == rhs.begin && dispatch_order < rhs.dispatch_order);
     }
 
     u32 begin;
@@ -49,6 +54,8 @@ struct Block : Hook {
     Block* branch_false{};
     IR::Block* ir_block{};
     bool is_dummy{};
+    u32 dispatch_order{};
+    std::optional<IndirectCondition> indirect_condition;
 };
 
 class CFG {
@@ -57,7 +64,8 @@ class CFG {
     using iterator = BlockList::iterator;
 
 public:
-    explicit CFG(Common::ObjectPool<Block>& block_pool, std::span<const GcnInst> inst_list);
+    explicit CFG(Common::ObjectPool<Block>& block_pool, std::span<const GcnInst> inst_list,
+                 VAddr pgm_base);
 
     [[nodiscard]] iterator begin() {
         return blocks.begin();
@@ -69,6 +77,14 @@ public:
     [[nodiscard]] std::string Dot() const;
 
 private:
+    struct JumpTable {
+        u32 index_reg;
+        std::vector<u32> targets;
+        u32 load_pc;
+        std::vector<u64> offsets;
+    };
+
+    std::optional<JumpTable> ResolveJumpTable(u32 setpc_index) const;
     void EmitLabels();
     void EmitBlocks();
     void LinkBlocks();
@@ -97,6 +113,8 @@ public:
     std::vector<u32> index_to_pc;
     boost::container::small_vector<Label, 16> labels;
     BlockList blocks;
+    VAddr pgm_base;
+    std::unordered_map<u32, JumpTable> jump_tables;
 };
 
 } // namespace Shader::Gcn

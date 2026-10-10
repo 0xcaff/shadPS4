@@ -114,6 +114,9 @@ public:
     u32 Add(const ImageResource& desc) {
         const u32 index{Add(image_resources, desc, [&desc](const auto& existing) {
             return desc.sharp_fetch == existing.sharp_fetch && desc.is_array == existing.is_array &&
+                   desc.is_written == existing.is_written && desc.is_depth == existing.is_depth &&
+                   desc.is_atomic == existing.is_atomic &&
+                   desc.is_atomic_float == existing.is_atomic_float &&
                    desc.mip_fallback_mode == existing.mip_fallback_mode &&
                    desc.constant_mip_index == existing.constant_mip_index &&
                    desc.post_op == existing.post_op;
@@ -128,7 +131,7 @@ public:
         const u32 index{Add(sampler_resources, desc, [this, &desc](const auto& existing) {
             return desc.sharp_fetch == existing.sharp_fetch && desc.post_op == existing.post_op &&
                    desc.post_op_tsharp_dw3_off == existing.post_op_tsharp_dw3_off &&
-                   desc.is_depth == existing.is_depth;
+                   desc.is_depth == existing.is_depth && desc.gather_3d == existing.gather_3d;
         })};
         return index;
     }
@@ -242,6 +245,9 @@ void PatchImageSharp(const ResourceDiscovery& resource, Info& info, Descriptors&
         .sharp_fetch = ConstructSharpFetch<AmdGpu::Image>(resource.sharps[0]),
         .is_depth = bool(inst_info.is_depth),
         .is_atomic = is_atomic,
+        .is_atomic_float = profile.supports_image_fp32_atomic_min_max &&
+                           (inst.GetOpcode() == IR::Opcode::ImageAtomicFMin32 ||
+                            inst.GetOpcode() == IR::Opcode::ImageAtomicFMax32),
         .is_array = bool(inst_info.is_array),
         .is_written = is_written,
         .is_r128 = bool(inst_info.is_r128),
@@ -329,6 +335,8 @@ void PatchImageSharp(const ResourceDiscovery& resource, Info& info, Descriptors&
             .post_op_tsharp_dw3_off =
                 lod_prod.IsEmpty() ? UNKNOWN_LOCATION : SharpLocationFromSource(lod_prod.Inst()),
             .is_depth = bool(inst_info.is_depth), // true for the _C (compare) opcodes
+            .gather_3d = inst_info.is_gather &&
+                         image.GetViewType(image_res.is_array) == AmdGpu::ImageType::Color3D,
         });
         inst.SetArg(0, ir.Imm32(image_binding | sampler_binding << 16));
     } else {
@@ -406,12 +414,13 @@ static void RemoveAppendBufferLaneOffset(IR::Inst& vx) {
             // First pattern
             ASSERT(vx.GetOpcode() == IR::Opcode::DataAppend);
             IR::Inst* vy = user;
-            auto vx_2 = IsMbcntWithExec(IR::Value{vy}, true, exec);
+            const bool first_is_hi = vy->Arg(2).U1();
+            auto vx_2 = IsMbcntWithExec(IR::Value{vy}, first_is_hi, exec);
             ASSERT(!vx_2.IsEmpty() && vx_2 == IR::Value{&vx});
             const auto [idx, operand] = FindUniqueUser(vy, [](const IR::Inst* inst) {
                 return inst->GetOpcode() == IR::Opcode::MaskedBitCount32;
             });
-            auto vy_2 = IsMbcntWithExec(IR::Value{idx}, false, exec);
+            auto vy_2 = IsMbcntWithExec(IR::Value{idx}, !first_is_hi, exec);
             ASSERT(!vy_2.IsEmpty() && vy_2 == IR::Value{vy});
             idx->ReplaceUsesWithAndRemove(IR::Value{&vx});
             continue;
@@ -485,6 +494,7 @@ void PatchGlobalDataShareAccess(IR::Inst& inst, Info& info, Descriptors& descrip
         inst.ReplaceUsesWith(ir.BufferAtomicIAdd(handle, address_dwords, inst.Arg(1), {}));
         break;
     case IR::Opcode::SharedAtomicIAdd64:
+        buffer.used_types |= IR::Type::U64;
         inst.ReplaceUsesWith(ir.BufferAtomicIAdd(handle, address_qwords, IR::U64{inst.Arg(1)}, {}));
         break;
     case IR::Opcode::SharedAtomicISub32:
@@ -502,6 +512,30 @@ void PatchGlobalDataShareAccess(IR::Inst& inst, Info& info, Descriptors& descrip
         const bool is_signed = inst.GetOpcode() == IR::Opcode::SharedAtomicSMax32;
         inst.ReplaceUsesWith(
             ir.BufferAtomicIMax(handle, address_dwords, inst.Arg(1), is_signed, {}));
+        break;
+    }
+    case IR::Opcode::SharedAtomicFMin32:
+        buffer.used_types |= IR::Type::F32;
+        inst.ReplaceUsesWith(ir.BufferAtomicFMin(handle, address_dwords, inst.Arg(1), {}));
+        break;
+    case IR::Opcode::SharedAtomicFMax32:
+        buffer.used_types |= IR::Type::F32;
+        inst.ReplaceUsesWith(ir.BufferAtomicFMax(handle, address_dwords, inst.Arg(1), {}));
+        break;
+    case IR::Opcode::SharedAtomicSMin64:
+    case IR::Opcode::SharedAtomicUMin64: {
+        const bool is_signed = inst.GetOpcode() == IR::Opcode::SharedAtomicSMin64;
+        buffer.used_types |= IR::Type::U64;
+        inst.ReplaceUsesWith(
+            ir.BufferAtomicIMin(handle, address_qwords, inst.Arg(1), is_signed, {}));
+        break;
+    }
+    case IR::Opcode::SharedAtomicSMax64:
+    case IR::Opcode::SharedAtomicUMax64: {
+        const bool is_signed = inst.GetOpcode() == IR::Opcode::SharedAtomicSMax64;
+        buffer.used_types |= IR::Type::U64;
+        inst.ReplaceUsesWith(
+            ir.BufferAtomicIMax(handle, address_qwords, inst.Arg(1), is_signed, {}));
         break;
     }
     case IR::Opcode::SharedAtomicInc32:
@@ -813,6 +847,39 @@ void PatchImageSampleArgs(IR::Inst& inst, Info& info, const ImageResource& image
             return ir.ImageRead(handle, coords, {}, ir.Imm32(0U), inst_info);
         }
         if (inst_info.is_gather) {
+            if (view_type == AmdGpu::ImageType::Color3D) {
+                ASSERT_MSG(inst_info.force_level0 && !inst_info.is_depth,
+                           "Unsupported 3D gather modifiers");
+                const auto size =
+                    ir.ImageQueryDimension(handle, ir.Imm32(0u), ir.Imm1(false), inst_info);
+                std::array<IR::F32, 3> dims;
+                std::array<IR::F32, 3> base;
+                for (u32 axis = 0; axis < 3; ++axis) {
+                    dims[axis] = ir.ConvertUToF(32, 32, ir.CompositeExtract(size, axis));
+                    const auto coord = IR::F32{ir.CompositeExtract(coords, axis)};
+                    auto texel = ir.FPMul(coord, dims[axis]);
+                    if (axis < 2) {
+                        texel = ir.FPSub(texel, ir.Imm32(0.5f));
+                    }
+                    base[axis] = ir.FPAdd(ir.FPFloor(texel), ir.Imm32(0.5f));
+                    if (!offset.IsEmpty()) {
+                        base[axis] = ir.FPAdd(
+                            base[axis], ir.ConvertSToF(32, 32, ir.CompositeExtract(offset, axis)));
+                    }
+                }
+                constexpr std::array<std::array<float, 2>, 4> offsets{
+                    {{0, 1}, {1, 1}, {1, 0}, {0, 0}}};
+                std::array<IR::F32, 4> values;
+                for (u32 tap = 0; tap < values.size(); ++tap) {
+                    const auto x = ir.FPDiv(ir.FPAdd(base[0], ir.Imm32(offsets[tap][0])), dims[0]);
+                    const auto y = ir.FPDiv(ir.FPAdd(base[1], ir.Imm32(offsets[tap][1])), dims[1]);
+                    const auto z = ir.FPDiv(base[2], dims[2]);
+                    const auto sample = ir.ImageSampleExplicitLod(
+                        handle, ir.CompositeConstruct(x, y, z), ir.Imm32(0.0f), {}, inst_info);
+                    values[tap] = IR::F32{ir.CompositeExtract(sample, inst_info.gather_comp)};
+                }
+                return ir.CompositeConstruct(values[0], values[1], values[2], values[3]);
+            }
             if (inst_info.is_depth) {
                 return ir.ImageGatherDref(handle, coords, offset, dref, inst_info);
             }

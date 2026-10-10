@@ -124,6 +124,7 @@ struct ImageResource {
     SharpFetch<AmdGpu::Image> sharp_fetch{};
     bool is_depth{};
     bool is_atomic{};
+    bool is_atomic_float{};
     bool is_array{};
     bool is_written{};
     bool is_r128{};
@@ -148,6 +149,10 @@ struct ImageResource {
                 data_fmt != AmdGpu::DataFormat::Format32) {
                 image = AmdGpu::Image::Null(true);
             }
+        }
+        if (is_atomic) {
+            image.num_format =
+                u64(is_atomic_float ? AmdGpu::NumberFormat::Float : AmdGpu::NumberFormat::Uint);
         }
         return image;
     }
@@ -179,6 +184,7 @@ struct SamplerResource {
     SharpFetchPostOp post_op{};
     SharpLocation post_op_tsharp_dw3_off{};
     bool is_depth{};
+    bool gather_3d{};
 
     constexpr AmdGpu::Sampler GetSharp(const auto& info) const noexcept {
         AmdGpu::Sampler sampler{};
@@ -199,6 +205,14 @@ struct SamplerResource {
         } else if (post_op == SharpFetchPostOp::ClearAnisoRatioAndThreshold) {
             sampler.max_aniso.Assign(AmdGpu::AnisoRatio::One);
             sampler.aniso_threshold.Assign(0);
+        }
+        if (gather_3d) {
+            sampler.xy_mag_filter.Assign(AmdGpu::Filter::Point);
+            sampler.xy_min_filter.Assign(AmdGpu::Filter::Point);
+            sampler.mip_filter.Assign(AmdGpu::MipFilter::None);
+            sampler.min_lod.Assign(0);
+            sampler.max_lod.Assign(0);
+            sampler.lod_bias.Assign(0);
         }
         return sampler;
     }
